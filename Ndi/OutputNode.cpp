@@ -227,3 +227,5 @@ bool OutputDevice::reconnect()
   return connected();
 }
 }
+
+#include <Gfx/Qt5CompatPop>
