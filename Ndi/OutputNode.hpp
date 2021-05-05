@@ -5,13 +5,12 @@
 
 namespace Ndi
 {
-
+struct OutputNode;
 class OutputRenderer : public RenderedNode
 {
 public:
   QRhiReadbackResult m_readback;
-  using RenderedNode::RenderedNode;
-  TextureRenderTarget createRenderTarget(const RenderState& state) override;
+  explicit OutputRenderer(const RenderState& st, const OutputNode& parent);
 
   void runPass(Renderer& renderer, QRhiCommandBuffer& cb, QRhiResourceUpdateBatch& updateBatch)
       override;
@@ -47,7 +46,7 @@ struct OutputNode : ::OutputNode
   void destroyOutput() override;
 
   RenderState* renderState() const override;
-  score::gfx::NodeRenderer* createRenderer() const noexcept override;
+  score::gfx::NodeRenderer* createRenderer(Renderer& r) const noexcept override;
 
   QTimer* m_timer{};
 };

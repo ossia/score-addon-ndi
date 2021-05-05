@@ -4,8 +4,6 @@
 #include <Ndi/InputFactory.hpp>
 #include <Ndi/OutputFactory.hpp>
 
-#include <score_addon_ndi_commands_files.hpp>
-
 score_addon_ndi::score_addon_ndi()
 {
 }

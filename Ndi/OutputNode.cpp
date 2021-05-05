@@ -6,7 +6,9 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Gfx/GfxExecContext.hpp>
 #include <Gfx/GfxParameter.hpp>
+#include <Gfx/Graph/renderer.hpp>
 #include <Ndi/OutputNode.hpp>
+#include <wobjectimpl.h>
 W_OBJECT_IMPL(Ndi::OutputDevice)
 namespace Ndi
 {
@@ -45,7 +47,7 @@ OutputNode::OutputNode(const Ndi::Loader& ndi)
       fragColor = texture(tex, vec2(v_texcoord.x, 1. - v_texcoord.y));
     }
     )_";
-  std::tie(m_vertexS, m_fragmentS) = makeShaders(m_mesh.defaultVertexShader(), gl_filter);
+  std::tie(m_vertexS, m_fragmentS) = score::gfx::makeShaders(m_mesh.defaultVertexShader(), gl_filter);
 
   input.push_back(new Port{this, {}, Types::Image, {}});
   m_timer = new QTimer;
@@ -145,17 +147,16 @@ RenderState* OutputNode::renderState() const
   return m_renderState.get();
 }
 
-score::gfx::NodeRenderer* OutputNode::createRenderer() const noexcept
+score::gfx::NodeRenderer* OutputNode::createRenderer(Renderer& r) const noexcept
 {
-  return new OutputRenderer{*this};
+  return new OutputRenderer{r.state, *this};
 }
 
-TextureRenderTarget OutputRenderer::createRenderTarget(const RenderState& state)
+OutputRenderer::OutputRenderer(const RenderState& state, const OutputNode& parent)
+  : RenderedNode{parent}
 {
-  auto& self = static_cast<const OutputNode&>(this->node);
-  m_rt.renderTarget = self.m_renderTarget;
+  m_rt.renderTarget = parent.m_renderTarget;
   m_rt.renderPass = state.renderPassDescriptor;
-  return m_rt;
 }
 
 void OutputRenderer::runPass(

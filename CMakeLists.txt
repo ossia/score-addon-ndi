@@ -2,6 +2,10 @@ project(score_addon_ndi LANGUAGES CXX)
 
 if(NOT TARGET score_lib_base)
   include("${SCORE_SOURCE_DIR}/cmake/ScoreExternalAddon.cmake")
+else()
+  if(NOT TARGET score_plugin_gfx)
+    return()
+  endif()
 endif()
 
 # General initialization
