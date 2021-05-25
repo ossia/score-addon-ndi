@@ -11,7 +11,7 @@
 
 #include <Gfx/GfxDevice.hpp>
 #include <Gfx/GfxExecContext.hpp>
-#include <Gfx/Graph/videonode.hpp>
+#include <Gfx/Graph/VideoNode.hpp>
 #include <Ndi/Loader.hpp>
 #include <Video/FrameQueue.hpp>
 #include <Video/VideoInterface.hpp>
@@ -73,7 +73,7 @@ class input_parameter : public ossia::gfx::texture_input_parameter
 public:
   std::shared_ptr<InputStream> stream;
   int32_t node_id{};
-  VideoNode* node{};
+  score::gfx::VideoNode* node{};
 
   input_parameter(
       const input_settings& settings,
@@ -85,8 +85,8 @@ public:
     stream = proto.stream;
     stream->load(settings.device);
 
-    node = new VideoNode(proto.stream, {});
-    node_id = context->ui->register_node(std::unique_ptr<VideoNode>(node));
+    node = new score::gfx::VideoNode(proto.stream, {});
+    node_id = context->ui->register_node(std::unique_ptr<score::gfx::VideoNode>(node));
   }
   void pull_texture(ossia::gfx::port_index idx) override
   {

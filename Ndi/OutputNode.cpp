@@ -6,7 +6,7 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Gfx/GfxExecContext.hpp>
 #include <Gfx/GfxParameter.hpp>
-#include <Gfx/Graph/renderer.hpp>
+#include <Gfx/Graph/RenderList.hpp>
 #include <Ndi/OutputNode.hpp>
 #include <wobjectimpl.h>
 W_OBJECT_IMPL(Ndi::OutputDevice)
@@ -31,7 +31,7 @@ public:
 };
 
 OutputNode::OutputNode(const Ndi::Loader& ndi)
-  : ::OutputNode{}
+  : score::gfx::OutputNode{}
   , m_ndi{ndi}
   , m_sender{m_ndi}
 {
@@ -49,7 +49,7 @@ OutputNode::OutputNode(const Ndi::Loader& ndi)
     )_";
   std::tie(m_vertexS, m_fragmentS) = score::gfx::makeShaders(m_mesh.defaultVertexShader(), gl_filter);
 
-  input.push_back(new Port{this, {}, Types::Image, {}});
+  input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
   m_timer = new QTimer;
   QObject::connect(m_timer, &QTimer::timeout, [this] {
     if (m_update)
@@ -100,23 +100,23 @@ void OutputNode::stopRendering()
   m_timer->stop();
 }
 
-void OutputNode::setRenderer(Renderer* r)
+void OutputNode::setRenderer(score::gfx::RenderList* r)
 {
   m_renderer = r;
 }
 
-Renderer* OutputNode::renderer() const
+score::gfx::RenderList* OutputNode::renderer() const
 {
   return m_renderer;
 }
 
 void OutputNode::createOutput(
-    GraphicsApi graphicsApi,
+    score::gfx::GraphicsApi graphicsApi,
     std::function<void()> onReady,
     std::function<void()> onUpdate,
     std::function<void()> onResize)
 {
-  m_renderState = std::make_shared<RenderState>();
+  m_renderState = std::make_shared<score::gfx::RenderState>();
   m_update = onUpdate;
 
   m_renderState->surface = QRhiGles2InitParams::newFallbackSurface();
@@ -142,25 +142,25 @@ void OutputNode::destroyOutput()
 {
 }
 
-RenderState* OutputNode::renderState() const
+score::gfx::RenderState* OutputNode::renderState() const
 {
   return m_renderState.get();
 }
 
-score::gfx::NodeRenderer* OutputNode::createRenderer(Renderer& r) const noexcept
+score::gfx::NodeRenderer* OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
   return new OutputRenderer{r.state, *this};
 }
 
-OutputRenderer::OutputRenderer(const RenderState& state, const OutputNode& parent)
-  : RenderedNode{parent}
+OutputRenderer::OutputRenderer(const score::gfx::RenderState& state, const OutputNode& parent)
+  : GenericNodeRenderer{parent}
 {
   m_rt.renderTarget = parent.m_renderTarget;
   m_rt.renderPass = state.renderPassDescriptor;
 }
 
 void OutputRenderer::runPass(
-    Renderer& renderer,
+    score::gfx::RenderList& renderer,
     QRhiCommandBuffer& cb,
     QRhiResourceUpdateBatch& updateBatch)
 {
