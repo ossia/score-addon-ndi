@@ -1,7 +1,7 @@
 #include <ossia/network/base/device.hpp>
 
 #include <QTimer>
-#include <QtGui/private/qrhigles2_p_p.h>
+#include <QtGui/private/qrhigles2_p.h>
 
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Gfx/GfxExecContext.hpp>
