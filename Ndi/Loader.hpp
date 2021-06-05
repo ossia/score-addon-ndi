@@ -1,6 +1,4 @@
 #pragma once
-// Needed for NULL...
-#include <cstdlib>
 #include <Processing.NDI.Lib.h>
 
 namespace Ndi

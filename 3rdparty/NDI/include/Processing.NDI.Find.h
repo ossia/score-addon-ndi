@@ -44,19 +44,19 @@ typedef struct NDIlib_find_create_t
 	// those IP addresses here and those sources will be available locally even though
 	// they are not mDNS discoverable. An example might be "12.0.0.8,13.0.12.8".
 	// When none is specified the registry is used.
-	// Default = NULL;
+	// Default = nullptr;
 	const char* p_extra_ips;
 
 #if NDILIB_CPP_DEFAULT_CONSTRUCTORS
-	NDIlib_find_create_t(bool show_local_sources_ = true, const char* p_groups_ = NULL, const char* p_extra_ips_ = NULL);
+	NDIlib_find_create_t(bool show_local_sources_ = true, const char* p_groups_ = nullptr, const char* p_extra_ips_ = nullptr);
 #endif // NDILIB_CPP_DEFAULT_CONSTRUCTORS
 
 } NDIlib_find_create_t;
 
 //**************************************************************************************************************************
-// Create a new finder instance. This will return NULL if it fails.
+// Create a new finder instance. This will return nullptr if it fails.
 PROCESSINGNDILIB_API
-NDIlib_find_instance_t NDIlib_find_create_v2(const NDIlib_find_create_t* p_create_settings NDILIB_CPP_DEFAULT_VALUE(NULL));
+NDIlib_find_instance_t NDIlib_find_create_v2(const NDIlib_find_create_t* p_create_settings NDILIB_CPP_DEFAULT_VALUE(nullptr));
 
 // This will destroy an existing finder instance.
 PROCESSINGNDILIB_API

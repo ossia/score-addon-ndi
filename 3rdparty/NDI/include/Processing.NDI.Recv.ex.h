@@ -132,7 +132,7 @@ bool NDIlib_recv_ptz_exposure_manual_v2(NDIlib_recv_instance_t p_instance, const
 // Recording control
 // This will start recording.If the recorder was already recording then the message is ignored.A filename is passed in as a "hint".Since the recorder might 
 // already be recording(or might not allow complete flexibility over its filename), the filename might or might not be used.If the filename is empty, or 
-// not present, a name will be chosen automatically. If you do not with to provide a filename hint you can simply pass NULL. 
+// not present, a name will be chosen automatically. If you do not with to provide a filename hint you can simply pass nullptr. 
 //
 // See note above on depreciation and why this is, and how to replace this functionality.
 PROCESSINGNDILIB_API PROCESSINGNDILIB_DEPRECATED
@@ -159,15 +159,15 @@ bool NDIlib_recv_recording_set_audio_level(NDIlib_recv_instance_t p_instance, co
 PROCESSINGNDILIB_API PROCESSINGNDILIB_DEPRECATED
 bool NDIlib_recv_recording_is_recording(NDIlib_recv_instance_t p_instance);
 
-// Get the current filename for recording. When this is set it will return a non-NULL value which is owned by you and freed using NDIlib_recv_free_string. 
+// Get the current filename for recording. When this is set it will return a non-nullptr value which is owned by you and freed using NDIlib_recv_free_string. 
 // If a file was already being recorded by another client, the massage will contain the name of that file. The filename contains a UNC path (when one is available) 
 // to the recorded file, and can be used to access the file on your local machine for playback.  If a UNC path is not available, then this will represent the local 
 // filename. This will remain valid even after the file has stopped being recorded until the next file is started.
 PROCESSINGNDILIB_API PROCESSINGNDILIB_DEPRECATED
 const char* NDIlib_recv_recording_get_filename(NDIlib_recv_instance_t p_instance);
 
-// This will tell you whether there was a recording error and what that string is. When this is set it will return a non-NULL value which is owned by you and 
-// freed using NDIlib_recv_free_string. When there is no error it will return NULL.
+// This will tell you whether there was a recording error and what that string is. When this is set it will return a non-nullptr value which is owned by you and 
+// freed using NDIlib_recv_free_string. When there is no error it will return nullptr.
 //
 // See note above on depreciation and why this is, and how to replace this functionality.
 PROCESSINGNDILIB_API PROCESSINGNDILIB_DEPRECATED
