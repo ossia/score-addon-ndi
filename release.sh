@@ -11,6 +11,3 @@ cp -rf 3rdparty/NDI release/3rdparty
 
 mv release score-addon-ndi
 7z a score-addon-ndi.zip score-addon-ndi
-
-
-
