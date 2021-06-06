@@ -1,7 +1,7 @@
 #!/bin/bash
 rm -rf release
 mkdir -p release
-cp -rf NDI *.{hpp,cpp,txt,json} LICENSE release/
+cp -rf Ndi *.{hpp,cpp,txt,json} LICENSE release/
 
 mkdir -p release/3rdparty
 cp -rf 3rdparty/NDI release/3rdparty
