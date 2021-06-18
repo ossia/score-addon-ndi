@@ -7,14 +7,33 @@
 namespace Ndi
 {
 struct OutputNode;
-class OutputRenderer : public score::gfx::GenericNodeRenderer
+class OutputRenderer final : public score::gfx::OutputNodeRenderer
 {
 public:
-  QRhiReadbackResult m_readback;
-  explicit OutputRenderer(const score::gfx::RenderState& st, const OutputNode& parent);
+  explicit OutputRenderer(score::gfx::TextureRenderTarget rt,  QRhiReadbackResult& readback);
 
-  void runPass(score::gfx::RenderList& renderer, QRhiCommandBuffer& cb, QRhiResourceUpdateBatch& updateBatch)
-      override;
+  score::gfx::TextureRenderTarget m_inputTarget;
+  score::gfx::TextureRenderTarget m_renderTarget;
+
+  QShader m_vertexS, m_fragmentS;
+
+  std::vector<score::gfx::Sampler> m_samplers;
+
+  score::gfx::Pipeline m_p;
+
+  score::gfx::MeshBuffers m_mesh{};
+
+  score::gfx::TextureRenderTarget renderTargetForInput(const score::gfx::Port& p) override { return m_inputTarget; }
+
+  void finishFrame(score::gfx::RenderList& renderer, QRhiCommandBuffer& cb) override;
+
+
+  void init(score::gfx::RenderList& renderer) override;
+  void update(score::gfx::RenderList& renderer, QRhiResourceUpdateBatch& res) override;
+  void release(score::gfx::RenderList&) override;
+
+private:
+  QRhiReadbackResult& m_readback;
 };
 
 struct OutputNode : score::gfx::OutputNode
@@ -27,6 +46,7 @@ struct OutputNode : score::gfx::OutputNode
   QRhiTextureRenderTarget* m_renderTarget{};
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
+  QRhiReadbackResult m_readback;
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
   bool m_hasSender{};
@@ -46,8 +66,10 @@ struct OutputNode : score::gfx::OutputNode
       std::function<void()> onResize) override;
   void destroyOutput() override;
 
+  const score::gfx::Mesh& mesh() const noexcept override;
+
   score::gfx::RenderState* renderState() const override;
-  score::gfx::NodeRenderer* createRenderer(score::gfx::RenderList& r) const noexcept override;
+  score::gfx::OutputNodeRenderer* createRenderer(score::gfx::RenderList& r) const noexcept override;
 
   QTimer* m_timer{};
 };

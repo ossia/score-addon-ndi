@@ -35,20 +35,6 @@ OutputNode::OutputNode(const Ndi::Loader& ndi)
   , m_ndi{ndi}
   , m_sender{m_ndi}
 {
-  // FIXME spout likely needs the same
-  static const constexpr auto gl_filter = R"_(#version 450
-    layout(location = 0) in vec2 v_texcoord;
-    layout(location = 0) out vec4 fragColor;
-
-    layout(binding = 3) uniform sampler2D tex;
-
-    void main()
-    {
-      fragColor = texture(tex, vec2(v_texcoord.x, 1. - v_texcoord.y));
-    }
-    )_";
-  std::tie(m_vertexS, m_fragmentS) = score::gfx::makeShaders(m_mesh.defaultVertexShader(), gl_filter);
-
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
   m_timer = new QTimer;
   QObject::connect(m_timer, &QTimer::timeout, [this] {
@@ -65,15 +51,14 @@ OutputNode::OutputNode(const Ndi::Loader& ndi)
       m_renderer->render(*cb);
 
       rhi->endOffscreenFrame();
-      auto out = safe_cast<OutputRenderer*>(renderedNodes[m_renderer]);
-      auto& readback = out->m_readback;
+
+      if(m_renderer->renderers.size() > 1)
       {
         NDIlib_video_frame_v2_t frame;
-        frame.xres = readback.pixelSize.width();
-        frame.yres = readback.pixelSize.height();
+        frame.xres = m_readback.pixelSize.width();
+        frame.yres = m_readback.pixelSize.height();
         frame.FourCC = NDIlib_FourCC_type_RGBA;
-        frame.p_data = (uint8_t*)readback.data.data();
-
+        frame.p_data = (uint8_t*)m_readback.data.data();
         m_sender.send_video(frame);
       }
     }
@@ -128,7 +113,7 @@ void OutputNode::createOutput(
   m_renderState->size = QSize(1280, 720);
 
   auto rhi = m_renderState->rhi;
-  m_texture = rhi->newTexture(QRhiTexture::RGBA8, m_renderState->size, 1, QRhiTexture::RenderTarget);
+  m_texture = rhi->newTexture(QRhiTexture::RGBA8, m_renderState->size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource);
   m_texture->create();
   m_renderTarget = rhi->newTextureRenderTarget({m_texture});
   m_renderState->renderPassDescriptor = m_renderTarget->newCompatibleRenderPassDescriptor();
@@ -142,50 +127,121 @@ void OutputNode::destroyOutput()
 {
 }
 
+const score::gfx::Mesh& OutputNode::mesh() const noexcept
+{
+  return score::gfx::TexturedTriangle::instance();
+}
+
 score::gfx::RenderState* OutputNode::renderState() const
 {
   return m_renderState.get();
 }
 
-score::gfx::NodeRenderer* OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
+score::gfx::OutputNodeRenderer* OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
-  return new OutputRenderer{r.state, *this};
+  score::gfx::TextureRenderTarget rt{m_texture, m_renderState->renderPassDescriptor, m_renderTarget};
+  return new OutputRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback)};
 }
 
-OutputRenderer::OutputRenderer(const score::gfx::RenderState& state, const OutputNode& parent)
-  : GenericNodeRenderer{parent}
+OutputRenderer::OutputRenderer(score::gfx::TextureRenderTarget rt,  QRhiReadbackResult& readback)
+    : score::gfx::OutputNodeRenderer{}
+    , m_inputTarget{std::move(rt)}
+    , m_readback{readback}
 {
-  m_rt.renderTarget = parent.m_renderTarget;
-  m_rt.renderPass = state.renderPassDescriptor;
 }
 
-void OutputRenderer::runPass(
+void OutputRenderer::init(score::gfx::RenderList& renderer)
+{
+  m_renderTarget = score::gfx::createRenderTarget(renderer.state, QRhiTexture::Format::RGBA8, m_inputTarget.texture->pixelSize());
+
+  auto& mesh = score::gfx::TexturedTriangle::instance();
+  m_mesh = renderer.initMeshBuffer(mesh);
+
+  // We need to have a pass to invert the Y coordinate to go
+  // from GL direction (Y up) to normal video (Y down)
+  // FIXME spout likely needs the same
+  static const constexpr auto gl_filter = R"_(#version 450
+    layout(location = 0) in vec2 v_texcoord;
+    layout(location = 0) out vec4 fragColor;
+
+    layout(binding = 3) uniform sampler2D tex;
+
+    void main()
+    {
+fragColor = vec4(1);
+      //fragColor = texture(tex, vec2(v_texcoord.x, 1. - v_texcoord.y));
+    }
+    )_";
+  std::tie(m_vertexS, m_fragmentS) = score::gfx::makeShaders(mesh.defaultVertexShader(), gl_filter);
+
+  // Put the input texture, where all the input nodes are rendering, in a sampler.
+  {
+    auto sampler = renderer.state.rhi->newSampler(
+        QRhiSampler::Linear,
+        QRhiSampler::Linear,
+        QRhiSampler::None,
+        QRhiSampler::ClampToEdge,
+        QRhiSampler::ClampToEdge);
+
+    sampler->setName("FullScreenImageNode::sampler");
+    sampler->create();
+
+    m_samplers.push_back({sampler, this->m_inputTarget.texture});
+  }
+
+  m_p = score::gfx::buildPipeline(
+      renderer,
+      mesh,
+      m_vertexS,
+      m_fragmentS,
+      m_renderTarget,
+      nullptr,
+      nullptr,
+      m_samplers);
+}
+
+void OutputRenderer::update(score::gfx::RenderList& renderer, QRhiResourceUpdateBatch& res)
+{
+}
+
+void OutputRenderer::release(score::gfx::RenderList&)
+{
+  m_p.release();
+  for(auto& s : m_samplers)
+  {
+    delete s.sampler;
+  }
+  m_samplers.clear();
+  m_renderTarget.release();
+}
+
+void OutputRenderer::finishFrame(
     score::gfx::RenderList& renderer,
-    QRhiCommandBuffer& cb,
-    QRhiResourceUpdateBatch& updateBatch)
+    QRhiCommandBuffer& cb)
 {
-  update(renderer, updateBatch);
-
-  cb.beginPass(m_rt.renderTarget, Qt::black, {1.0f, 0}, &updateBatch);
+  cb.beginPass(m_renderTarget.renderTarget, Qt::black, {1.0f, 0}, nullptr);
   {
     const auto sz = renderer.state.size;
-    cb.setGraphicsPipeline(pipeline());
-    cb.setShaderResources(resources());
+    cb.setGraphicsPipeline(m_p.pipeline);
+    cb.setShaderResources(m_p.srb);
     cb.setViewport(QRhiViewport(0, 0, sz.width(), sz.height()));
 
-    assert(this->m_meshBuffer);
-    assert(this->m_meshBuffer->usage().testFlag(QRhiBuffer::VertexBuffer));
-    node.mesh().setupBindings(*this->m_meshBuffer, this->m_idxBuffer, cb);
+    assert(this->m_mesh.mesh);
+    assert(this->m_mesh.mesh->usage().testFlag(QRhiBuffer::VertexBuffer));
 
-    cb.draw(node.mesh().vertexCount);
+    auto& mesh = score::gfx::TexturedTriangle::instance();
+    mesh.setupBindings(*this->m_mesh.mesh, this->m_mesh.index, cb);
+
+    cb.draw(mesh.vertexCount);
   }
 
   auto next = renderer.state.rhi->nextResourceUpdateBatch();
 
-  auto& self = static_cast<const OutputNode&>(this->node);
-  QRhiReadbackDescription rb(self.m_texture);
+  QRhiReadbackDescription rb(m_inputTarget.texture);
   next->readBackTexture(rb, &m_readback);
   cb.endPass(next);
+  qDebug("rendered year");
+
 }
 
 OutputDevice::OutputDevice(
