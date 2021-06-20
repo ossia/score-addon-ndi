@@ -41,7 +41,7 @@ struct OutputNode : score::gfx::OutputNode
   OutputNode(const Ndi::Loader& ndi);
   virtual ~OutputNode();
 
-  score::gfx::RenderList* m_renderer{};
+  std::weak_ptr<score::gfx::RenderList> m_renderer{};
   QRhiTexture* m_texture{};
   QRhiTextureRenderTarget* m_renderTarget{};
   std::function<void()> m_update;
@@ -56,7 +56,7 @@ struct OutputNode : score::gfx::OutputNode
   bool canRender() const override;
   void stopRendering() override;
 
-  void setRenderer(score::gfx::RenderList* r) override;
+  void setRenderer(std::shared_ptr<score::gfx::RenderList>) override;
   score::gfx::RenderList* renderer() const override;
 
   void createOutput(
@@ -65,8 +65,6 @@ struct OutputNode : score::gfx::OutputNode
       std::function<void()> onUpdate,
       std::function<void()> onResize) override;
   void destroyOutput() override;
-
-  const score::gfx::Mesh& mesh() const noexcept override;
 
   score::gfx::RenderState* renderState() const override;
   score::gfx::OutputNodeRenderer* createRenderer(score::gfx::RenderList& r) const noexcept override;

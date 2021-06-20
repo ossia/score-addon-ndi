@@ -41,18 +41,20 @@ OutputNode::OutputNode(const Ndi::Loader& ndi)
     if (m_update)
       m_update();
 
-    if (m_renderer && m_renderState)
+
+    auto renderer = m_renderer.lock();
+    if (renderer && m_renderState)
     {
       auto rhi = m_renderState->rhi;
       QRhiCommandBuffer* cb{};
       if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
         return;
 
-      m_renderer->render(*cb);
+      renderer->render(*cb);
 
       rhi->endOffscreenFrame();
 
-      if(m_renderer->renderers.size() > 1)
+      if(renderer->renderers.size() > 1)
       {
         NDIlib_video_frame_v2_t frame;
         frame.xres = m_readback.pixelSize.width();
@@ -85,14 +87,14 @@ void OutputNode::stopRendering()
   m_timer->stop();
 }
 
-void OutputNode::setRenderer(score::gfx::RenderList* r)
+void OutputNode::setRenderer(std::shared_ptr<score::gfx::RenderList> r)
 {
   m_renderer = r;
 }
 
 score::gfx::RenderList* OutputNode::renderer() const
 {
-  return m_renderer;
+  return m_renderer.lock().get();
 }
 
 void OutputNode::createOutput(
@@ -125,11 +127,6 @@ void OutputNode::createOutput(
 
 void OutputNode::destroyOutput()
 {
-}
-
-const score::gfx::Mesh& OutputNode::mesh() const noexcept
-{
-  return score::gfx::TexturedTriangle::instance();
 }
 
 score::gfx::RenderState* OutputNode::renderState() const
@@ -168,8 +165,7 @@ void OutputRenderer::init(score::gfx::RenderList& renderer)
 
     void main()
     {
-fragColor = vec4(1);
-      //fragColor = texture(tex, vec2(v_texcoord.x, 1. - v_texcoord.y));
+      fragColor = texture(tex, vec2(v_texcoord.x, 1. - v_texcoord.y));
     }
     )_";
   std::tie(m_vertexS, m_fragmentS) = score::gfx::makeShaders(mesh.defaultVertexShader(), gl_filter);
