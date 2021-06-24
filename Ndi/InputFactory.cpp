@@ -84,7 +84,7 @@ Device::DeviceEnumerator* InputFactory::getEnumerator(const score::DocumentConte
 }
 
 Device::DeviceInterface*
-InputFactory::makeDevice(const Device::DeviceSettings& settings, const score::DocumentContext& ctx)
+InputFactory::makeDevice(const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& plugin, const score::DocumentContext& ctx)
 {
   return new InputDevice(settings, ctx);
 }

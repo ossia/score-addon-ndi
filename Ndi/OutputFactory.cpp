@@ -24,6 +24,7 @@ Device::DeviceEnumerator* OutputFactory::getEnumerator(const score::DocumentCont
 
 Device::DeviceInterface* OutputFactory::makeDevice(
     const Device::DeviceSettings& settings,
+    const Explorer::DeviceDocumentPlugin& plugin,
     const score::DocumentContext& ctx)
 {
   return new OutputDevice(settings, ctx);

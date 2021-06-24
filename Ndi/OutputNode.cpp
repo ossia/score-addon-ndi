@@ -236,8 +236,6 @@ void OutputRenderer::finishFrame(
   QRhiReadbackDescription rb(m_inputTarget.texture);
   next->readBackTexture(rb, &m_readback);
   cb.endPass(next);
-  qDebug("rendered year");
-
 }
 
 OutputDevice::OutputDevice(
