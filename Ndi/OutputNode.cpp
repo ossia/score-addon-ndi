@@ -136,7 +136,7 @@ score::gfx::RenderState* OutputNode::renderState() const
 
 score::gfx::OutputNodeRenderer* OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
-  score::gfx::TextureRenderTarget rt{m_texture, m_renderState->renderPassDescriptor, m_renderTarget};
+  score::gfx::TextureRenderTarget rt{m_texture, nullptr, m_renderState->renderPassDescriptor, m_renderTarget};
   return new OutputRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback)};
 }
 
