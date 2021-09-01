@@ -5,6 +5,7 @@
 #include <Ndi/OutputFactory.hpp>
 #include <Ndi/Loader.hpp>
 #include <score/widgets/MessageBox.hpp>
+#include <QTimer>
 
 score_addon_ndi::score_addon_ndi()
 {
@@ -12,10 +13,12 @@ score_addon_ndi::score_addon_ndi()
 
   if(!m_hasNDI)
   {
+    QTimer::singleShot(1, [] {
     score::warning(nullptr,
                    "NDI not found",
                    "NDI not available, please install an NDI library and reboot, or remove the NDI add-on.\n"
                    "NDI is searched for in the NDI_RUNTIME_DIR_V4 environment variable by default.");
+    });
   }
 }
 
