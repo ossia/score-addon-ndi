@@ -26,4 +26,6 @@ private:
   std::vector<std::unique_ptr<score::InterfaceBase>> factories(
       const score::ApplicationContext& ctx,
       const score::InterfaceKey& key) const override;
+
+  bool m_hasNDI{};
 };

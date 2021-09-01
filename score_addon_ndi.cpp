@@ -3,9 +3,20 @@
 #include <score/plugins/FactorySetup.hpp>
 #include <Ndi/InputFactory.hpp>
 #include <Ndi/OutputFactory.hpp>
+#include <Ndi/Loader.hpp>
+#include <score/widgets/MessageBox.hpp>
 
 score_addon_ndi::score_addon_ndi()
 {
+  m_hasNDI = Ndi::Loader::instance().available();
+
+  if(!m_hasNDI)
+  {
+    score::warning(nullptr,
+                   "NDI not found",
+                   "NDI not available, please install an NDI library and reboot, or remove the NDI add-on.\n"
+                   "NDI is searched for in the NDI_RUNTIME_DIR_V4 environment variable by default.");
+  }
 }
 
 score_addon_ndi::~score_addon_ndi()
@@ -16,6 +27,9 @@ std::vector<std::unique_ptr<score::InterfaceBase>>
 score_addon_ndi::factories(
     const score::ApplicationContext& ctx, const score::InterfaceKey& key) const
 {
+  if(!m_hasNDI)
+    return {};
+
   return instantiate_factories<
       score::ApplicationContext,
       FW<Device::ProtocolFactory
