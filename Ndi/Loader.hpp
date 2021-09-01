@@ -56,9 +56,9 @@ struct Loader
   }
 
   // Recv API
-  auto recv_create() const noexcept
+  auto recv_create(NDIlib_recv_create_v3_t* inst = nullptr) const noexcept
   {
-    return m_lib->recv_create_v3(nullptr);
+    return m_lib->recv_create_v3(inst);
   }
   auto recv_destroy(NDIlib_recv_instance_t recv) const noexcept
   {
@@ -153,14 +153,19 @@ struct Receiver
 
   Receiver(const Loader& ndi)
     : ndi{ndi}
-    , impl{ndi.recv_create()}
   {
 
   }
 
   ~Receiver()
   {
-    ndi.recv_destroy(impl);
+    if(impl)
+      ndi.recv_destroy(impl);
+  }
+
+  auto create(NDIlib_recv_create_v3_t setup)
+  {
+    impl = ndi.recv_create(&setup);
   }
 
   auto connect(const NDIlib_source_t* source)

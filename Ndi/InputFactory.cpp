@@ -26,7 +26,7 @@ public:
     auto sources = find.get_current_sources(&num_sources);
 
     std::set<QString> new_nodes;
-    for(int i = 0; i < num_sources; i++)
+    for(uint32_t i = 0; i < num_sources; i++)
     {
       QString name = sources[i].p_ndi_name;
       new_nodes.insert(name);
@@ -39,7 +39,7 @@ public:
         dev.name = name;
         dev.protocol = InputFactory::static_concreteKey();
         dev.deviceSpecificSettings = QVariant::fromValue(set);
-        deviceAdded(std::move(dev));
+        deviceAdded(dev);
 
         m_known.insert(name);
       }

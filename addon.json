@@ -2,7 +2,7 @@
   "src": "https://github.com/ossia/score-addon-ndi/releases/download/v4.1.0/score-addon-ndi.zip",
   "name": "NDI support",
   "raw_name": "score-addon-ndi",
-  "version": "4.1",
+  "version": "4.2",
   "kind": "addon",
   "short": "Support for NDI input and output",
   "long": "This addon provides NDI input and output devices",

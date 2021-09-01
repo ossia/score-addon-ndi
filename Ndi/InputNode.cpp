@@ -50,10 +50,17 @@ bool InputStream::load(const std::string& inputDevice) noexcept
   NDIlib_source_t source;
   source.p_ndi_name = inputDevice.c_str();
   source.p_url_address = nullptr;
-  m_receiver.connect(&source);
+  NDIlib_recv_create_v3_t info;
+  info.allow_video_fields = false;
+  info.bandwidth = NDIlib_recv_bandwidth_highest;
+  info.color_format = NDIlib_recv_color_format_UYVY_RGBA;
+  info.source_to_connect_to = source;
+
+  m_receiver.create(info);
+
   pixel_format = AV_PIX_FMT_UYVY422;
-  width = 1920;
-  height = 1080;
+  width = 0;
+  height = 0;
 
   return true;
 }
@@ -88,6 +95,13 @@ AVFrame* InputStream::dequeue_frame() noexcept
 
 void InputStream::release_frame(AVFrame* frame) noexcept
 {
+  NDIlib_video_frame_v2_t ndi_frame{};
+  ndi_frame.p_data = frame->data[0];
+  ndi_frame.p_metadata = nullptr;
+  frame->data[0] = nullptr;
+
+  m_receiver.free_video(&ndi_frame);
+
   m_frames.release(frame);
 }
 
@@ -143,19 +157,23 @@ static std::optional<AVPixelFormat> getPixelFormat(NDIlib_FourCC_video_type_e fo
 AVFrame* InputStream::read_frame_impl() noexcept
 {
   NDIlib_video_frame_v2_t ndi_frame;
+  ndi_frame.p_metadata = nullptr;
   switch (m_receiver.capture(&ndi_frame, nullptr, nullptr, 1000))
   {
     case NDIlib_frame_type_video:
     {
       if(auto format = getPixelFormat(ndi_frame.FourCC))
       {
-        AVFrame* frame = m_frames.newFrame();
+        AVFrame* frame = m_frames.newFrame().release();
+
         frame->format = *format;
 
         frame->data[0] = ndi_frame.p_data;
         frame->linesize[0] = ndi_frame.line_stride_in_bytes;
         frame->width = ndi_frame.xres;
         frame->height = ndi_frame.yres;
+        height = frame->height;
+        width = frame->width;
 
         return frame;
       }
