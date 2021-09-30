@@ -26,6 +26,11 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <wobjectimpl.h>
 
+extern "C"
+{
+#include <libavformat/avformat.h>
+}
+
 W_OBJECT_IMPL(Ndi::InputDevice)
 
 SCORE_SERALIZE_DATASTREAM_DEFINE(Ndi::InputSettings);
