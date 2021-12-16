@@ -11,6 +11,7 @@ namespace Ndi
 class InputEnumerator : public Device::DeviceEnumerator
 {
   std::set<QString> m_known;
+  Ndi::Finder find{Loader::instance()};
 public:
   InputEnumerator()
   {
@@ -19,10 +20,8 @@ public:
 
   void timerEvent(QTimerEvent* ev) override
   {
-    auto& ndi = Loader::instance();
-    Ndi::Finder find{ndi};
     uint32_t num_sources = 0;
-    find.wait_for_sources(100);
+    find.wait_for_sources(10);
     auto sources = find.get_current_sources(&num_sources);
 
     std::set<QString> new_nodes;
