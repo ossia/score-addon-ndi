@@ -20,6 +20,10 @@
 #include <ossia-qt/name_utils.hpp>
 
 #include <QComboBox>
+#include <Gfx/Graph/VideoNode.hpp>
+#include <Ndi/Loader.hpp>
+#include <Video/FrameQueue.hpp>
+#include <Video/VideoInterface.hpp>
 #include <QFormLayout>
 #include <QMenu>
 #include <QMimeData>
@@ -37,6 +41,32 @@ SCORE_SERALIZE_DATASTREAM_DEFINE(Ndi::InputSettings);
 
 namespace Ndi
 {
+class InputStream final : public Video::ExternalInput
+{
+public:
+  explicit InputStream(const Ndi::Loader& ndi) noexcept;
+  ~InputStream() noexcept;
+  bool load(const std::string& inputDevice) noexcept;
+
+  bool start() noexcept override;
+  void stop() noexcept override;
+
+  AVFrame* dequeue_frame() noexcept override;
+  void release_frame(AVFrame* frame) noexcept override;
+
+private:
+  AVFrame* get_new_frame() noexcept;
+  void buffer_thread() noexcept;
+  AVFrame* read_frame_impl() noexcept;
+  std::thread m_thread;
+  Video::FrameQueue m_frames;
+
+  std::atomic_bool m_running{};
+
+  const Ndi::Loader& m_ndi;
+  Ndi::Receiver m_receiver;
+};
+
 
 InputStream::InputStream(const Ndi::Loader& ndi) noexcept
   : m_ndi{ndi}
@@ -200,12 +230,6 @@ AVFrame* InputStream::read_frame_impl() noexcept
   return nullptr;
 }
 
-input_protocol::input_protocol(Gfx::GfxExecutionAction& ctx)
-    : protocol_base{flags{}}, context{&ctx}
-{
-  stream = std::make_shared<InputStream>(Loader::instance());
-}
-
 InputDevice::~InputDevice() { }
 
 bool InputDevice::reconnect()
@@ -219,16 +243,15 @@ bool InputDevice::reconnect()
       return false;
 
     auto set = this->settings().deviceSpecificSettings.value<InputSettings>();
-    input_settings ossia_stgs{
-        set.device.toStdString()
-    };
 
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
     if (plug)
     {
-      m_protocol = new input_protocol{plug->exec};
-      m_dev = std::make_unique<input_device>(
-          ossia_stgs,
+      auto stream = std::make_shared<InputStream>(ndi);
+      stream->load(set.device.toStdString());
+
+      m_protocol = new Gfx::video_texture_input_protocol{std::move(stream), plug->exec};
+      m_dev = std::make_unique<Gfx::video_texture_input_device>(
           std::unique_ptr<ossia::net::protocol_base>(m_protocol),
           this->settings().name.toStdString());
     }

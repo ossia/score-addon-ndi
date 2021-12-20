@@ -2,39 +2,12 @@
 #include <Gfx/GfxDevice.hpp>
 #include <Gfx/Graph/NodeRenderer.hpp>
 #include <Gfx/Graph/OutputNode.hpp>
+#include <Gfx/InvertYRenderer.hpp>
 #include <Ndi/Loader.hpp>
 
 namespace Ndi
 {
 struct OutputNode;
-class OutputRenderer final : public score::gfx::OutputNodeRenderer
-{
-public:
-  explicit OutputRenderer(score::gfx::TextureRenderTarget rt,  QRhiReadbackResult& readback);
-
-  score::gfx::TextureRenderTarget m_inputTarget;
-  score::gfx::TextureRenderTarget m_renderTarget;
-
-  QShader m_vertexS, m_fragmentS;
-
-  std::vector<score::gfx::Sampler> m_samplers;
-
-  score::gfx::Pipeline m_p;
-
-  score::gfx::MeshBuffers m_mesh{};
-
-  score::gfx::TextureRenderTarget renderTargetForInput(const score::gfx::Port& p) override { return m_inputTarget; }
-
-  void finishFrame(score::gfx::RenderList& renderer, QRhiCommandBuffer& cb) override;
-
-
-  void init(score::gfx::RenderList& renderer) override;
-  void update(score::gfx::RenderList& renderer, QRhiResourceUpdateBatch& res) override;
-  void release(score::gfx::RenderList&) override;
-
-private:
-  QRhiReadbackResult& m_readback;
-};
 
 struct OutputNode : score::gfx::OutputNode
 {
@@ -52,6 +25,7 @@ struct OutputNode : score::gfx::OutputNode
   bool m_hasSender{};
 
   void startRendering() override;
+  void render() override;
   void onRendererChange() override;
   bool canRender() const override;
   void stopRendering() override;
@@ -69,6 +43,7 @@ struct OutputNode : score::gfx::OutputNode
   score::gfx::RenderState* renderState() const override;
   score::gfx::OutputNodeRenderer* createRenderer(score::gfx::RenderList& r) const noexcept override;
 
+  Configuration configuration() const noexcept override;
   QTimer* m_timer{};
 };
 

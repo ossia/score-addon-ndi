@@ -4,6 +4,7 @@
 
 #include <QFormLayout>
 
+#include <Ndi/Loader.hpp>
 #include <Ndi/InputNode.hpp>
 #include <set>
 namespace Ndi
