@@ -3,6 +3,7 @@
 #include <Gfx/Graph/NodeRenderer.hpp>
 #include <Gfx/Graph/OutputNode.hpp>
 #include <Gfx/InvertYRenderer.hpp>
+
 #include <Ndi/Loader.hpp>
 
 namespace Ndi
@@ -34,14 +35,13 @@ struct OutputNode : score::gfx::OutputNode
   score::gfx::RenderList* renderer() const override;
 
   void createOutput(
-      score::gfx::GraphicsApi graphicsApi,
-      std::function<void()> onReady,
-      std::function<void()> onUpdate,
-      std::function<void()> onResize) override;
+      score::gfx::GraphicsApi graphicsApi, std::function<void()> onReady,
+      std::function<void()> onUpdate, std::function<void()> onResize) override;
   void destroyOutput() override;
 
-  score::gfx::RenderState* renderState() const override;
-  score::gfx::OutputNodeRenderer* createRenderer(score::gfx::RenderList& r) const noexcept override;
+  std::shared_ptr<score::gfx::RenderState> renderState() const override;
+  score::gfx::OutputNodeRenderer*
+  createRenderer(score::gfx::RenderList& r) const noexcept override;
 
   Configuration configuration() const noexcept override;
   QTimer* m_timer{};
@@ -51,7 +51,8 @@ class OutputDevice final : public Gfx::GfxOutputDevice
 {
   W_OBJECT(OutputDevice)
 public:
-  OutputDevice(const Device::DeviceSettings& settings, const score::DocumentContext& ctx);
+  OutputDevice(
+      const Device::DeviceSettings& settings, const score::DocumentContext& ctx);
   ~OutputDevice();
 
 private:

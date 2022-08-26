@@ -1,13 +1,17 @@
+#include <Gfx/GfxApplicationPlugin.hpp>
+#include <Gfx/GfxExecContext.hpp>
+#include <Gfx/GfxParameter.hpp>
+#include <Gfx/Graph/RenderList.hpp>
+
+#include <score/gfx/OpenGL.hpp>
+
 #include <ossia/network/base/device.hpp>
 
 #include <QTimer>
 #include <QtGui/private/qrhigles2_p.h>
 
-#include <Gfx/GfxApplicationPlugin.hpp>
-#include <Gfx/GfxExecContext.hpp>
-#include <Gfx/GfxParameter.hpp>
-#include <Gfx/Graph/RenderList.hpp>
 #include <Ndi/OutputNode.hpp>
+
 #include <wobjectimpl.h>
 W_OBJECT_IMPL(Ndi::OutputDevice)
 namespace Ndi
@@ -19,10 +23,10 @@ class ndi_output_device : public ossia::net::device_base
 
 public:
   ndi_output_device(
-      const Ndi::Loader& ndi,
-      std::unique_ptr<ossia::net::protocol_base> proto,
+      const Ndi::Loader& ndi, std::unique_ptr<ossia::net::protocol_base> proto,
       std::string name)
-      : ossia::net::device_base{std::move(proto)}, root{*this, new OutputNode{ndi}, name}
+      : ossia::net::device_base{std::move(proto)}
+      , root{*this, new OutputNode{ndi}, name}
   {
   }
 
@@ -31,23 +35,22 @@ public:
 };
 
 OutputNode::OutputNode(const Ndi::Loader& ndi)
-  : score::gfx::OutputNode{}
-  , m_ndi{ndi}
-  , m_sender{m_ndi}
+    : score::gfx::OutputNode{}
+    , m_ndi{ndi}
+    , m_sender{m_ndi}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
   m_timer = new QTimer;
   QObject::connect(m_timer, &QTimer::timeout, [this] {
-    if (m_update)
+    if(m_update)
       m_update();
 
-
     auto renderer = m_renderer.lock();
-    if (renderer && m_renderState)
+    if(renderer && m_renderState)
     {
       auto rhi = m_renderState->rhi;
       QRhiCommandBuffer* cb{};
-      if (rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
+      if(rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
         return;
 
       renderer->render(*cb);
@@ -78,17 +81,13 @@ void OutputNode::startRendering()
   m_timer->start(16);
 }
 
-void OutputNode::render()
-{
-}
+void OutputNode::render() { }
 
 score::gfx::OutputNode::Configuration OutputNode::configuration() const noexcept
 {
-  return { .manualRenderingRate = 60. };
+  return {.manualRenderingRate = 60.};
 }
-void OutputNode::onRendererChange()
-{
-}
+void OutputNode::onRendererChange() { }
 
 void OutputNode::stopRendering()
 {
@@ -106,10 +105,8 @@ score::gfx::RenderList* OutputNode::renderer() const
 }
 
 void OutputNode::createOutput(
-    score::gfx::GraphicsApi graphicsApi,
-    std::function<void()> onReady,
-    std::function<void()> onUpdate,
-    std::function<void()> onResize)
+    score::gfx::GraphicsApi graphicsApi, std::function<void()> onReady,
+    std::function<void()> onUpdate, std::function<void()> onResize)
 {
   m_renderState = std::make_shared<score::gfx::RenderState>();
   m_update = onUpdate;
@@ -117,41 +114,45 @@ void OutputNode::createOutput(
   m_renderState->surface = QRhiGles2InitParams::newFallbackSurface();
   QRhiGles2InitParams params;
   params.fallbackSurface = m_renderState->surface;
+  score::GLCapabilities caps;
+  caps.setupFormat(params.format);
 #include <Gfx/Qt5CompatPop>
   m_renderState->rhi = QRhi::create(QRhi::OpenGLES2, &params, {});
 #include <Gfx/Qt5CompatPush>
-  m_renderState->size = QSize(1280, 720);
+  m_renderState->renderSize = QSize(1280, 720);
   m_renderState->api = score::gfx::GraphicsApi::OpenGL;
 
   auto rhi = m_renderState->rhi;
-  m_texture = rhi->newTexture(QRhiTexture::RGBA8, m_renderState->size, 1, QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource);
+  m_texture = rhi->newTexture(
+      QRhiTexture::RGBA8, m_renderState->renderSize, 1,
+      QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource);
   m_texture->create();
   m_renderTarget = rhi->newTextureRenderTarget({m_texture});
-  m_renderState->renderPassDescriptor = m_renderTarget->newCompatibleRenderPassDescriptor();
+  m_renderState->renderPassDescriptor
+      = m_renderTarget->newCompatibleRenderPassDescriptor();
   m_renderTarget->setRenderPassDescriptor(m_renderState->renderPassDescriptor);
   m_renderTarget->create();
 
   onReady();
 }
 
-void OutputNode::destroyOutput()
+void OutputNode::destroyOutput() { }
+
+std::shared_ptr<score::gfx::RenderState> OutputNode::renderState() const
 {
+  return m_renderState;
 }
 
-score::gfx::RenderState* OutputNode::renderState() const
+score::gfx::OutputNodeRenderer*
+OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
-  return m_renderState.get();
-}
-
-score::gfx::OutputNodeRenderer* OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
-{
-  score::gfx::TextureRenderTarget rt{m_texture, nullptr, m_renderState->renderPassDescriptor, m_renderTarget};
+  score::gfx::TextureRenderTarget rt{
+      m_texture, nullptr, nullptr, m_renderState->renderPassDescriptor, m_renderTarget};
   return new Gfx::InvertYRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback)};
 }
 
 OutputDevice::OutputDevice(
-    const Device::DeviceSettings& settings,
-    const score::DocumentContext& ctx)
+    const Device::DeviceSettings& settings, const score::DocumentContext& ctx)
     : Gfx::GfxOutputDevice{settings, ctx}
 {
 }
@@ -168,20 +169,19 @@ bool OutputDevice::reconnect()
     if(!ndi.available())
       return false;
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
-    if (plug)
+    if(plug)
     {
       m_protocol = new Gfx::gfx_protocol_base{plug->exec};
       m_dev = std::make_unique<ndi_output_device>(
-          ndi,
-          std::unique_ptr<ossia::net::protocol_base>(m_protocol),
+          ndi, std::unique_ptr<ossia::net::protocol_base>(m_protocol),
           m_settings.name.toStdString());
     }
   }
-  catch (std::exception& e)
+  catch(std::exception& e)
   {
     qDebug() << "Could not connect: " << e.what();
   }
-  catch (...)
+  catch(...)
   {
     // TODO save the reason of the non-connection.
   }
