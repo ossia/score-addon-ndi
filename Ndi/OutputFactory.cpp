@@ -3,28 +3,44 @@
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
 #include <QFormLayout>
+#include <QLabel>
 
 #include <Ndi/OutputNode.hpp>
 namespace Ndi
 {
+class OutputSettingsWidget final : public Gfx::SharedOutputSettingsWidget
+{
+public:
+  OutputSettingsWidget(QWidget* parent = nullptr)
+      : Gfx::SharedOutputSettingsWidget{parent}
+  {
+    m_deviceNameEdit->setText("NDI Out");
+    m_shmPath->setVisible(false);
+    ((QLabel*)m_layout->labelForField(m_shmPath))->setVisible(false);
+
+    setSettings(OutputFactory{}.defaultSettings());
+  }
+
+  Device::DeviceSettings getSettings() const override
+  {
+    auto set = Gfx::SharedOutputSettingsWidget::getSettings();
+    set.protocol = OutputFactory::static_concreteKey();
+    return set;
+  }
+};
+
+Device::ProtocolSettingsWidget* OutputFactory::makeSettingsWidget()
+{
+  return new OutputSettingsWidget{};
+}
+
 QString OutputFactory::prettyName() const noexcept
 {
   return QObject::tr("NDI Output");
 }
 
-QString OutputFactory::category() const noexcept
-{
-  return StandardCategories::video;
-}
-
-Device::DeviceEnumerator* OutputFactory::getEnumerator(const score::DocumentContext& ctx) const
-{
-  return nullptr;
-}
-
 Device::DeviceInterface* OutputFactory::makeDevice(
-    const Device::DeviceSettings& settings,
-    const Explorer::DeviceDocumentPlugin& plugin,
+    const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& doc,
     const score::DocumentContext& ctx)
 {
   return new OutputDevice(settings, ctx);
@@ -36,79 +52,15 @@ const Device::DeviceSettings& OutputFactory::defaultSettings() const noexcept
     Device::DeviceSettings s;
     s.protocol = concreteKey();
     s.name = "NDI Output";
+    Gfx::SharedOutputSettings set;
+    set.width = 1280;
+    set.height = 720;
+    set.path = "ndi";
+    set.rate = 60.;
+    s.deviceSpecificSettings = QVariant::fromValue(set);
     return s;
   }();
   return settings;
-}
-
-Device::AddressDialog* OutputFactory::makeAddAddressDialog(
-    const Device::DeviceInterface& dev,
-    const score::DocumentContext& ctx,
-    QWidget* parent)
-{
-  return nullptr;
-}
-
-Device::AddressDialog* OutputFactory::makeEditAddressDialog(
-    const Device::AddressSettings& set,
-    const Device::DeviceInterface& dev,
-    const score::DocumentContext& ctx,
-    QWidget* parent)
-{
-  return nullptr;
-}
-
-Device::ProtocolSettingsWidget* OutputFactory::makeSettingsWidget()
-{
-  return new OutputSettingsWidget;
-}
-
-QVariant OutputFactory::makeProtocolSpecificSettings(const VisitorVariant& visitor) const
-{
-  return {};
-}
-
-void OutputFactory::serializeProtocolSpecificSettings(
-    const QVariant& data,
-    const VisitorVariant& visitor) const
-{
-}
-
-bool OutputFactory::checkCompatibility(
-    const Device::DeviceSettings& a,
-    const Device::DeviceSettings& b) const noexcept
-{
-  return a.name != b.name;
-}
-
-OutputSettingsWidget::OutputSettingsWidget(QWidget* parent) : ProtocolSettingsWidget(parent)
-{
-  m_deviceNameEdit = new State::AddressFragmentLineEdit{this};
-
-  auto layout = new QFormLayout;
-  layout->addRow(tr("Device Name"), m_deviceNameEdit);
-
-  setLayout(layout);
-
-  setDefaults();
-}
-
-void OutputSettingsWidget::setDefaults()
-{
-  m_deviceNameEdit->setText("NDI Output");
-}
-
-Device::DeviceSettings OutputSettingsWidget::getSettings() const
-{
-  Device::DeviceSettings s;
-  s.name = m_deviceNameEdit->text();
-  s.protocol = OutputFactory::static_concreteKey();
-  return s;
-}
-
-void OutputSettingsWidget::setSettings(const Device::DeviceSettings& settings)
-{
-  m_deviceNameEdit->setText(settings.name);
 }
 
 }

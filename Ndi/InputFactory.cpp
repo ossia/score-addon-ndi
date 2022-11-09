@@ -3,9 +3,11 @@
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
 #include <QFormLayout>
+#include <QLabel>
 
-#include <Ndi/Loader.hpp>
 #include <Ndi/InputNode.hpp>
+#include <Ndi/Loader.hpp>
+
 #include <set>
 namespace Ndi
 {
@@ -13,11 +15,9 @@ class InputEnumerator : public Device::DeviceEnumerator
 {
   std::set<QString> m_known;
   Ndi::Finder find{Loader::instance()};
+
 public:
-  InputEnumerator()
-  {
-    startTimer(1000);
-  }
+  InputEnumerator() { startTimer(1000); }
 
   void timerEvent(QTimerEvent* ev) override
   {
@@ -32,8 +32,8 @@ public:
       new_nodes.insert(name);
       if(m_known.find(name) == m_known.end())
       {
-        InputSettings set;
-        set.device = name;
+        Gfx::SharedInputSettings set;
+        set.path = name;
 
         Device::DeviceSettings dev;
         dev.name = name;
@@ -45,7 +45,7 @@ public:
       }
     }
 
-    for(auto it = m_known.begin(); it != m_known.end(); )
+    for(auto it = m_known.begin(); it != m_known.end();)
     {
       if(!new_nodes.contains(*it))
       {
@@ -59,9 +59,7 @@ public:
     }
   }
 
-  void enumerate(std::function<void(const Device::DeviceSettings&)> f) const override
-  {
-  }
+  void enumerate(std::function<void(const Device::DeviceSettings&)> f) const override { }
 };
 
 QString InputFactory::prettyName() const noexcept
@@ -69,12 +67,8 @@ QString InputFactory::prettyName() const noexcept
   return QObject::tr("NDI Input");
 }
 
-QString InputFactory::category() const noexcept
-{
-  return StandardCategories::video;
-}
-
-Device::DeviceEnumerator* InputFactory::getEnumerator(const score::DocumentContext& ctx) const
+Device::DeviceEnumerator*
+InputFactory::getEnumerator(const score::DocumentContext& ctx) const
 {
   auto& ndi = Loader::instance();
   if(!ndi.available())
@@ -83,8 +77,9 @@ Device::DeviceEnumerator* InputFactory::getEnumerator(const score::DocumentConte
     return new InputEnumerator;
 }
 
-Device::DeviceInterface*
-InputFactory::makeDevice(const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& plugin, const score::DocumentContext& ctx)
+Device::DeviceInterface* InputFactory::makeDevice(
+    const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& plugin,
+    const score::DocumentContext& ctx)
 {
   return new InputDevice(settings, ctx);
 }
@@ -95,28 +90,11 @@ const Device::DeviceSettings& InputFactory::defaultSettings() const noexcept
     Device::DeviceSettings s;
     s.protocol = concreteKey();
     s.name = "NDI Input";
-    InputSettings specif;
+    Gfx::SharedInputSettings specif;
     s.deviceSpecificSettings = QVariant::fromValue(specif);
     return s;
   }();
   return settings;
-}
-
-Device::AddressDialog* InputFactory::makeAddAddressDialog(
-    const Device::DeviceInterface& dev,
-    const score::DocumentContext& ctx,
-    QWidget* parent)
-{
-  return nullptr;
-}
-
-Device::AddressDialog* InputFactory::makeEditAddressDialog(
-    const Device::AddressSettings& set,
-    const Device::DeviceInterface& dev,
-    const score::DocumentContext& ctx,
-    QWidget* parent)
-{
-  return nullptr;
 }
 
 Device::ProtocolSettingsWidget* InputFactory::makeSettingsWidget()
@@ -124,53 +102,20 @@ Device::ProtocolSettingsWidget* InputFactory::makeSettingsWidget()
   return new InputSettingsWidget;
 }
 
-QVariant InputFactory::makeProtocolSpecificSettings(const VisitorVariant& visitor) const
+InputSettingsWidget::InputSettingsWidget(QWidget* parent)
+    : SharedInputSettingsWidget(parent)
 {
-  return makeProtocolSpecificSettings_T<InputSettings>(visitor);
-}
-
-void InputFactory::serializeProtocolSpecificSettings(
-    const QVariant& data,
-    const VisitorVariant& visitor) const
-{
-  serializeProtocolSpecificSettings_T<InputSettings>(data, visitor);
-}
-
-bool InputFactory::checkCompatibility(
-    const Device::DeviceSettings& a,
-    const Device::DeviceSettings& b) const noexcept
-{
-  return a.name != b.name;
-}
-
-InputSettingsWidget::InputSettingsWidget(QWidget* parent) : ProtocolSettingsWidget(parent)
-{
-  m_deviceNameEdit = new State::AddressFragmentLineEdit{this};
-  checkForChanges(m_deviceNameEdit);
-
-  auto layout = new QFormLayout;
-  layout->addRow(tr("Device Name"), m_deviceNameEdit);
-  setLayout(layout);
-
-  setDefaults();
-}
-
-void InputSettingsWidget::setDefaults()
-{
-  m_deviceNameEdit->setText("ndi");
+  m_deviceNameEdit->setText("NDI In");
+  m_shmPath->setVisible(false);
+  ((QLabel*)m_layout->labelForField(m_shmPath))->setVisible(false);
+  setSettings(InputFactory{}.defaultSettings());
 }
 
 Device::DeviceSettings InputSettingsWidget::getSettings() const
 {
-  Device::DeviceSettings s = m_settings;
-  s.name = m_deviceNameEdit->text();
-  s.protocol = InputFactory::static_concreteKey();
-  return s;
+  auto set = SharedInputSettingsWidget::getSettings();
+  set.protocol = InputFactory::static_concreteKey();
+  return set;
 }
 
-void InputSettingsWidget::setSettings(const Device::DeviceSettings& settings)
-{
-  m_settings = settings;
-  m_deviceNameEdit->setText(settings.name);
-}
 }

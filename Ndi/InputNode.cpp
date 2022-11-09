@@ -1,43 +1,39 @@
 #include "InputNode.hpp"
 
-#include <ossia/detail/flicks.hpp>
-
-#include <QDebug>
-#include <QElapsedTimer>
-
-#include <fmt/format.h>
-
-#include <functional>
-
-
-#include "InputNode.hpp"
-
 #include <State/MessageListSerialization.hpp>
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
+#include <Gfx/GfxApplicationPlugin.hpp>
+#include <Gfx/Graph/VideoNode.hpp>
+#include <Gfx/SharedInputSettings.hpp>
+#include <Video/FrameQueue.hpp>
+#include <Video/VideoInterface.hpp>
+
 #include <score/serialization/MimeVisitor.hpp>
+
+#include <ossia/detail/flicks.hpp>
 
 #include <ossia-qt/name_utils.hpp>
 
 #include <QComboBox>
-#include <Gfx/Graph/VideoNode.hpp>
-#include <Ndi/Loader.hpp>
-#include <Video/FrameQueue.hpp>
-#include <Video/VideoInterface.hpp>
+#include <QDebug>
+#include <QElapsedTimer>
 #include <QFormLayout>
 #include <QMenu>
 #include <QMimeData>
-#include <Gfx/GfxApplicationPlugin.hpp>
+
+#include <Ndi/Loader.hpp>
+#include <fmt/format.h>
+
 #include <wobjectimpl.h>
 
-extern "C"
-{
+#include <functional>
+
+extern "C" {
 #include <libavformat/avformat.h>
 }
 
 W_OBJECT_IMPL(Ndi::InputDevice)
-
-SCORE_SERALIZE_DATASTREAM_DEFINE(Ndi::InputSettings);
 
 namespace Ndi
 {
@@ -67,10 +63,9 @@ private:
   Ndi::Receiver m_receiver;
 };
 
-
 InputStream::InputStream(const Ndi::Loader& ndi) noexcept
-  : m_ndi{ndi}
-  , m_receiver{ndi}
+    : m_ndi{ndi}
+    , m_receiver{ndi}
 {
   realTime = true;
 }
@@ -102,7 +97,7 @@ bool InputStream::load(const std::string& inputDevice) noexcept
 
 bool InputStream::start() noexcept
 {
-  if (m_running)
+  if(m_running)
     return false;
 
   m_running.store(true, std::memory_order_release);
@@ -116,7 +111,7 @@ void InputStream::stop() noexcept
   // Stop the running status
   m_running.store(false, std::memory_order_release);
 
-  if (m_thread.joinable())
+  if(m_thread.joinable())
     m_thread.join();
 
   // Remove frames that were in flight
@@ -142,9 +137,9 @@ void InputStream::release_frame(AVFrame* frame) noexcept
 
 void InputStream::buffer_thread() noexcept
 {
-  while (m_running.load(std::memory_order_acquire))
+  while(m_running.load(std::memory_order_acquire))
   {
-    if (auto f = read_frame_impl())
+    if(auto f = read_frame_impl())
     {
       m_frames.enqueue(f);
     }
@@ -153,7 +148,7 @@ void InputStream::buffer_thread() noexcept
 
 static std::optional<AVPixelFormat> getPixelFormat(NDIlib_FourCC_video_type_e fourcc)
 {
-  switch (fourcc)
+  switch(fourcc)
   {
     case NDIlib_FourCC_video_type_UYVY:
       return AV_PIX_FMT_UYVY422;
@@ -193,10 +188,9 @@ AVFrame* InputStream::read_frame_impl() noexcept
 {
   NDIlib_video_frame_v2_t ndi_frame;
   ndi_frame.p_metadata = nullptr;
-  switch (m_receiver.capture(&ndi_frame, nullptr, nullptr, 1000))
+  switch(m_receiver.capture(&ndi_frame, nullptr, nullptr, 1000))
   {
-    case NDIlib_frame_type_video:
-    {
+    case NDIlib_frame_type_video: {
       if(auto format = getPixelFormat(ndi_frame.FourCC))
       {
         AVFrame* frame = m_frames.newFrame().release();
@@ -242,13 +236,13 @@ bool InputDevice::reconnect()
     if(!ndi.available())
       return false;
 
-    auto set = this->settings().deviceSpecificSettings.value<InputSettings>();
+    auto set = this->settings().deviceSpecificSettings.value<Gfx::SharedInputSettings>();
 
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
-    if (plug)
+    if(plug)
     {
       auto stream = std::make_shared<InputStream>(ndi);
-      stream->load(set.device.toStdString());
+      stream->load(set.path.toStdString());
 
       m_protocol = new Gfx::video_texture_input_protocol{std::move(stream), plug->exec};
       m_dev = std::make_unique<Gfx::video_texture_input_device>(
@@ -256,11 +250,11 @@ bool InputDevice::reconnect()
           this->settings().name.toStdString());
     }
   }
-  catch (std::exception& e)
+  catch(std::exception& e)
   {
     qDebug() << "Could not connect: " << e.what();
   }
-  catch (...)
+  catch(...)
   {
     // TODO save the reason of the non-connection.
   }
@@ -268,30 +262,4 @@ bool InputDevice::reconnect()
   return connected();
 }
 
-}
-
-template <>
-void DataStreamReader::read(const Ndi::InputSettings& n)
-{
-  m_stream << n.device;
-  insertDelimiter();
-}
-
-template <>
-void DataStreamWriter::write(Ndi::InputSettings& n)
-{
-  m_stream >> n.device;
-  checkDelimiter();
-}
-
-template <>
-void JSONReader::read(const Ndi::InputSettings& n)
-{
-  obj["Device"] = n.device;
-}
-
-template <>
-void JSONWriter::write(Ndi::InputSettings& n)
-{
-  n.device = obj["Device"].toString();
 }

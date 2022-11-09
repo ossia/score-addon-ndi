@@ -3,23 +3,17 @@
 #include <Device/Protocol/DeviceInterface.hpp>
 #include <Device/Protocol/DeviceSettings.hpp>
 
+#include <Gfx/GfxExecContext.hpp>
+#include <Gfx/GfxInputDevice.hpp>
+
 #include <ossia/gfx/texture_parameter.hpp>
 #include <ossia/network/base/device.hpp>
 #include <ossia/network/base/protocol.hpp>
 
 #include <QLineEdit>
-
-#include <Gfx/GfxInputDevice.hpp>
-#include <Gfx/GfxExecContext.hpp>
 class QComboBox;
 namespace Ndi
 {
-
-struct InputSettings
-{
-  QString device;
-};
-
 class InputDevice final : public Gfx::GfxInputDevice
 {
   W_OBJECT(InputDevice)
@@ -36,7 +30,3 @@ private:
 };
 
 }
-
-SCORE_SERIALIZE_DATASTREAM_DECLARE(, Ndi::InputSettings);
-Q_DECLARE_METATYPE(Ndi::InputSettings)
-W_REGISTER_ARGTYPE(Ndi::InputSettings)
