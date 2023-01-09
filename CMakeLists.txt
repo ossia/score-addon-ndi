@@ -9,6 +9,10 @@ else()
   endif()
 endif()
 
+if(EMSCRIPTEN)
+  return()
+endif()
+
 # General initialization
 score_common_setup()
 
