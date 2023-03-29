@@ -67,14 +67,14 @@ QString InputFactory::prettyName() const noexcept
   return QObject::tr("NDI Input");
 }
 
-Device::DeviceEnumerator*
-InputFactory::getEnumerator(const score::DocumentContext& ctx) const
+Device::DeviceEnumerators
+InputFactory::getEnumerators(const score::DocumentContext& ctx) const
 {
   auto& ndi = Loader::instance();
   if(!ndi.available())
-    return nullptr;
+    return {};
   else
-    return new InputEnumerator;
+    return {{"Sources", new InputEnumerator}};
 }
 
 Device::DeviceInterface* InputFactory::makeDevice(

@@ -17,8 +17,8 @@ class InputFactory final : public Gfx::SharedInputProtocolFactory
   SCORE_CONCRETE("ae78b7c6-6400-483e-b45b-fd6ff87ec700")
 public:
   QString prettyName() const noexcept override;
-  Device::DeviceEnumerator*
-  getEnumerator(const score::DocumentContext& ctx) const override;
+  Device::DeviceEnumerators
+  getEnumerators(const score::DocumentContext& ctx) const override;
 
   Device::DeviceInterface* makeDevice(
       const Device::DeviceSettings& settings,
