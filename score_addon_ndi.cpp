@@ -27,7 +27,7 @@ score_addon_ndi::score_addon_ndi()
 
 score_addon_ndi::~score_addon_ndi() { }
 
-std::vector<std::unique_ptr<score::InterfaceBase>> score_addon_ndi::factories(
+std::vector<score::InterfaceBase*> score_addon_ndi::factories(
     const score::ApplicationContext& ctx, const score::InterfaceKey& key) const
 {
   if(!m_hasNDI)
