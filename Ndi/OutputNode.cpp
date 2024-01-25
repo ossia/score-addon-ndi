@@ -65,7 +65,9 @@ public:
       const Ndi::Loader& ndi, const Gfx::SharedOutputSettings& set,
       std::unique_ptr<ossia::net::protocol_base> proto, std::string name)
       : ossia::net::device_base{std::move(proto)}
-      , root{*this, new OutputNode{ndi, set}, name}
+      , root{
+            *this, static_cast<Gfx::gfx_protocol_base&>(*proto),
+            new OutputNode{ndi, set}, name}
   {
   }
 
