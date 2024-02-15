@@ -66,7 +66,7 @@ public:
       std::unique_ptr<ossia::net::protocol_base> proto, std::string name)
       : ossia::net::device_base{std::move(proto)}
       , root{
-            *this, static_cast<Gfx::gfx_protocol_base&>(*proto),
+            *this, *static_cast<Gfx::gfx_protocol_base*>(m_protocol.get()),
             new OutputNode{ndi, set}, name}
   {
   }
