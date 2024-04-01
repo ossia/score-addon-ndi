@@ -39,7 +39,7 @@ public:
         dev.name = name;
         dev.protocol = InputFactory::static_concreteKey();
         dev.deviceSpecificSettings = QVariant::fromValue(set);
-        deviceAdded(dev);
+        deviceAdded(dev.name, dev);
 
         m_known.insert(name);
       }
@@ -59,7 +59,10 @@ public:
     }
   }
 
-  void enumerate(std::function<void(const Device::DeviceSettings&)> f) const override { }
+  void enumerate(std::function<void(const QString&, const Device::DeviceSettings&)> f)
+      const override
+  {
+  }
 };
 
 QString InputFactory::prettyName() const noexcept
