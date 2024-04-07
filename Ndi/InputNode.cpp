@@ -4,6 +4,7 @@
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
 #include <Gfx/GfxApplicationPlugin.hpp>
+#include <Gfx/GfxInputDevice.hpp>
 #include <Gfx/Graph/VideoNode.hpp>
 #include <Gfx/SharedInputSettings.hpp>
 #include <Video/FrameQueue.hpp>
