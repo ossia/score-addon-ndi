@@ -13,8 +13,16 @@ namespace Ndi
 Loader::Loader()
 {
   using namespace std::literals;
-  std::string ndi_path = NDILIB_LIBRARY_NAME;
   const char* ndi_folder = getenv(NDILIB_REDIST_FOLDER);
+  if(!ndi_folder)
+  {
+    ndi_folder = getenv("NDI_RUNTIME_DIR_V6");
+    if(!ndi_folder)
+    {
+      ndi_folder = getenv("NDI_RUNTIME_DIR_V5");
+    }
+  }
+  std::string ndi_path = NDILIB_LIBRARY_NAME;
 
 #ifdef _WIN32
   if(ndi_folder)
@@ -46,12 +54,21 @@ Loader::Loader()
     return;
   }
 #else
-  if(ndi_folder)
+
+  for(auto ndi_name : {"libndi.so.8", "libndi.so.7", "libndi.so.6", "libndi.so.5"})
   {
-    ndi_path = ndi_folder + "/"s + NDILIB_LIBRARY_NAME;
+    if(ndi_folder)
+    {
+      ndi_path = ndi_folder + "/"s + ndi_name;
+    }
+    m_ndi_dll = dlopen(ndi_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+    if(m_ndi_dll)
+    {
+      ossia::logger().info("Found NDI: {}", ndi_path);
+      break;
+    }
   }
 
-  m_ndi_dll = dlopen(ndi_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
   if(!m_ndi_dll)
   {
     ossia::logger().error(
