@@ -82,6 +82,73 @@ struct Loader
   {
     return m_lib->recv_free_video_v2(recv, frame);
   }
+  auto recv_ptz_is_supported(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_is_supported(recv);
+  }
+  auto recv_ptz_zoom(NDIlib_recv_instance_t recv, float zoom) const noexcept
+  {
+    return m_lib->recv_ptz_zoom(recv, zoom);
+  }
+  auto
+  recv_ptz_pan_tilt(NDIlib_recv_instance_t recv, float pan, float tilt) const noexcept
+  {
+    return m_lib->recv_ptz_pan_tilt(recv, pan, tilt);
+  }
+  auto recv_ptz_pan_tilt_speed(
+      NDIlib_recv_instance_t recv, float pan, float tilt) const noexcept
+  {
+    return m_lib->recv_ptz_pan_tilt_speed(recv, pan, tilt);
+  }
+  auto recv_ptz_store_preset(NDIlib_recv_instance_t recv, int p) const noexcept
+  {
+    return m_lib->recv_ptz_store_preset(recv, p);
+  }
+  auto recv_ptz_recall_preset(NDIlib_recv_instance_t recv, int p, float s) const noexcept
+  {
+    return m_lib->recv_ptz_recall_preset(recv, p, s);
+  }
+  auto recv_ptz_auto_focus(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_auto_focus(recv);
+  }
+  auto recv_ptz_focus(NDIlib_recv_instance_t recv, float pan) const noexcept
+  {
+    return m_lib->recv_ptz_focus(recv, pan);
+  }
+  auto recv_ptz_focus_speed(NDIlib_recv_instance_t recv, float pan) const noexcept
+  {
+    return m_lib->recv_ptz_focus_speed(recv, pan);
+  }
+  auto recv_ptz_white_balance_auto(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_white_balance_auto(recv);
+  }
+  auto recv_ptz_white_balance_indoor(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_white_balance_indoor(recv);
+  }
+  auto recv_ptz_white_balance_outdoor(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_white_balance_outdoor(recv);
+  }
+  auto recv_ptz_white_balance_oneshot(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_white_balance_oneshot(recv);
+  }
+  auto recv_ptz_white_balance_manual(
+      NDIlib_recv_instance_t recv, float r, float b) const noexcept
+  {
+    return m_lib->recv_ptz_white_balance_manual(recv, r, b);
+  }
+  auto recv_ptz_exposure_auto(NDIlib_recv_instance_t recv) const noexcept
+  {
+    return m_lib->recv_ptz_exposure_auto(recv);
+  }
+  auto recv_ptz_exposure_manual(NDIlib_recv_instance_t recv, float pan) const noexcept
+  {
+    return m_lib->recv_ptz_exposure_manual(recv, pan);
+  }
 
 private:
   void* m_ndi_dll{};
@@ -167,5 +234,49 @@ struct Receiver
   {
     return ndi.recv_free_video(impl, frame);
   }
+
+  bool has_ptz() const noexcept { return ndi.recv_ptz_is_supported(impl); }
+
+  void zoom(float zoom) const noexcept { ndi.recv_ptz_zoom(impl, zoom); }
+  void pan(float pan) noexcept { ndi.recv_ptz_pan_tilt(impl, m_pan = pan, m_tilt); }
+  void tilt(float tilt) noexcept { ndi.recv_ptz_pan_tilt(impl, m_pan, m_tilt = tilt); }
+  void pan_speed(float pan) noexcept
+  {
+    ndi.recv_ptz_pan_tilt_speed(impl, m_pan_speed = pan, m_tilt_speed);
+  }
+  void tilt_speed(float tilt) noexcept
+  {
+    ndi.recv_ptz_pan_tilt_speed(impl, m_pan_speed, m_tilt_speed = tilt);
+  }
+  void store_preset(int p) const noexcept { ndi.recv_ptz_store_preset(impl, p); }
+  void recall_preset(int p) const noexcept { ndi.recv_ptz_recall_preset(impl, p, 0.f); }
+  void auto_focus() const noexcept { ndi.recv_ptz_auto_focus(impl); }
+  void focus(float pan) const noexcept { ndi.recv_ptz_focus(impl, pan); }
+  void focus_speed(float pan) const noexcept { ndi.recv_ptz_focus_speed(impl, pan); }
+  void white_balance_auto() const noexcept { ndi.recv_ptz_white_balance_auto(impl); }
+  void white_balance_indoor() const noexcept { ndi.recv_ptz_white_balance_indoor(impl); }
+  void white_balance_outdoor() const noexcept
+  {
+    ndi.recv_ptz_white_balance_outdoor(impl);
+  }
+  void white_balance_oneshot() const noexcept
+  {
+    ndi.recv_ptz_white_balance_oneshot(impl);
+  }
+  void white_balance_manual(float r, float b) const noexcept
+  {
+    ndi.recv_ptz_white_balance_manual(impl, r, b);
+  }
+  void exposure_auto() const noexcept { ndi.recv_ptz_exposure_auto(impl); }
+  void exposure_manual(float pan) const noexcept
+  {
+    ndi.recv_ptz_exposure_manual(impl, pan);
+  }
+
+private:
+  float m_pan = 0.;
+  float m_tilt = 0.;
+  float m_pan_speed = 0.;
+  float m_tilt_speed = 0.;
 };
 }

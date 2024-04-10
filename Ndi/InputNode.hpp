@@ -14,6 +14,7 @@
 class QComboBox;
 namespace Ndi
 {
+class InputStream;
 class InputDevice final : public Gfx::GfxInputDevice
 {
   W_OBJECT(InputDevice)
@@ -22,11 +23,15 @@ public:
   ~InputDevice();
 
 private:
+  void createPtz();
   bool reconnect() override;
+  void disconnect() override;
+
   ossia::net::device_base* getDevice() const override { return m_dev.get(); }
 
   Gfx::video_texture_input_protocol* m_protocol{};
   mutable std::unique_ptr<Gfx::video_texture_input_device> m_dev;
+  std::shared_ptr<InputStream> m_stream;
 };
 
 }

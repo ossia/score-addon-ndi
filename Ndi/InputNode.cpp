@@ -39,8 +39,11 @@ W_OBJECT_IMPL(Ndi::InputDevice)
 
 namespace Ndi
 {
-class InputStream final : public Video::ExternalInput
+class InputStream final
+    : public QObject
+    , public Video::ExternalInput
 {
+  W_OBJECT(InputStream)
 public:
   explicit InputStream(const Ndi::Loader& ndi) noexcept;
   ~InputStream() noexcept;
@@ -52,7 +55,12 @@ public:
   AVFrame* dequeue_frame() noexcept override;
   void release_frame(AVFrame* frame) noexcept override;
 
+  void ptz_changed(bool state) W_SIGNAL(ptz_changed, state)
+
+  Ndi::Receiver& receiver() noexcept { return m_receiver; }
+
 private:
+  void timerEvent(QTimerEvent* t) override;
   AVFrame* get_new_frame() noexcept;
   void buffer_thread() noexcept;
   AVFrame* read_frame_impl() noexcept;
@@ -64,12 +72,14 @@ private:
   const Ndi::Loader& m_ndi;
   Ndi::Receiver m_receiver;
 };
+W_OBJECT_IMPL(InputStream)
 
 InputStream::InputStream(const Ndi::Loader& ndi) noexcept
     : m_ndi{ndi}
     , m_receiver{ndi}
 {
   realTime = true;
+  startTimer(1000);
 }
 
 InputStream::~InputStream() noexcept
@@ -135,6 +145,15 @@ void InputStream::release_frame(AVFrame* frame) noexcept
   m_receiver.free_video(&ndi_frame);
 
   m_frames.release(frame);
+}
+
+void InputStream::timerEvent(QTimerEvent* t)
+{
+  if(m_receiver.has_ptz())
+  {
+    ptz_changed(true);
+    killTimer(t->timerId());
+  }
 }
 
 void InputStream::buffer_thread() noexcept
@@ -228,6 +247,126 @@ AVFrame* InputStream::read_frame_impl() noexcept
 
 InputDevice::~InputDevice() { }
 
+void InputDevice::createPtz()
+{
+  if(m_dev && m_stream)
+  {
+    Ndi::Receiver& cam = m_stream->receiver();
+    auto& root = m_dev->get_root_node();
+    nodeCreated(ossia::net::create_node(root, "/ptz"));
+    nodeCreated(ossia::net::create_node(root, "/ptz/preset"));
+    nodeCreated(ossia::net::create_node(root, "/ptz/focus"));
+    nodeCreated(ossia::net::create_node(root, "/ptz/wb"));
+    nodeCreated(ossia::net::create_node(root, "/ptz/exposure"));
+
+    {
+      auto p = ossia::create_parameter(root, "/ptz/zoom", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.zoom(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/pan", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.pan(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/tilt", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.tilt(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/pan/speed", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.pan_speed(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/tilt/speed", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.tilt_speed(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/preset/store", "int");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.store_preset(ossia::convert<int>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/preset/recall", "int");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.recall_preset(ossia::convert<int>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/focus/auto", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.auto_focus(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/focus/manual", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.focus(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/focus/speed", "float");
+      p->add_callback(
+          [&cam](const ossia::value& v) { cam.focus_speed(ossia::convert<float>(v)); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/wb/auto", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.white_balance_auto(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/wb/indoor", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.white_balance_indoor(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/wb/outdoor", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.white_balance_outdoor(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/wb/oneshot", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.white_balance_oneshot(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/wb/manual", "rgb");
+      p->add_callback([&cam](const ossia::value& v) {
+        ossia::vec3f col = ossia::convert<ossia::vec3f>(v);
+        cam.white_balance_manual(col[0], col[2]);
+      });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/exposure/auto", "impulse");
+      p->add_callback([&cam](const ossia::value& v) { cam.exposure_auto(); });
+      nodeCreated(p->get_node());
+    }
+    {
+      auto p = ossia::create_parameter(root, "/ptz/exposure/manual", "float");
+      p->add_callback([&cam](const ossia::value& v) {
+        cam.exposure_manual(ossia::convert<float>(v));
+      });
+      nodeCreated(p->get_node());
+    }
+  }
+}
+
+void InputDevice::disconnect()
+{
+  m_stream.reset();
+  GfxInputDevice::disconnect();
+}
+
 bool InputDevice::reconnect()
 {
   disconnect();
@@ -243,13 +382,18 @@ bool InputDevice::reconnect()
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
     if(plug)
     {
-      auto stream = std::make_shared<InputStream>(ndi);
-      stream->load(set.path.toStdString());
+      m_stream = std::make_shared<InputStream>(ndi);
+      m_stream->load(set.path.toStdString());
 
-      m_protocol = new Gfx::video_texture_input_protocol{std::move(stream), plug->exec};
+      m_protocol = new Gfx::video_texture_input_protocol{m_stream, plug->exec};
       m_dev = std::make_unique<Gfx::video_texture_input_device>(
           std::unique_ptr<ossia::net::protocol_base>(m_protocol),
           this->settings().name.toStdString());
+      if(m_stream->receiver().has_ptz())
+        createPtz();
+      else
+        connect(
+            m_stream.get(), &InputStream::ptz_changed, this, &InputDevice::createPtz);
     }
   }
   catch(std::exception& e)
@@ -263,5 +407,4 @@ bool InputDevice::reconnect()
 
   return connected();
 }
-
 }
