@@ -9,9 +9,12 @@
 
 #include <QLineEdit>
 
+#include <Ndi/OutputSettings.hpp>
+
 namespace Ndi
 {
 class gfx_protocol_base;
+
 class OutputFactory final : public Gfx::SharedOutputProtocolFactory
 {
   SCORE_CONCRETE("07651c13-83de-48b8-a450-abe2891051e8")
@@ -24,5 +27,9 @@ public:
   const Device::DeviceSettings& defaultSettings() const noexcept override;
 
   Device::ProtocolSettingsWidget* makeSettingsWidget() override;
+  QVariant makeProtocolSpecificSettings(const VisitorVariant& visitor) const override;
+
+  void serializeProtocolSpecificSettings(
+      const QVariant& data, const VisitorVariant& visitor) const override;
 };
 }

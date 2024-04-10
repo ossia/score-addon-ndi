@@ -43,7 +43,7 @@ target_include_directories(score_addon_ndi PRIVATE 3rdparty/NDI/include)
 target_link_libraries(score_addon_ndi
   PUBLIC
     score_plugin_engine score_plugin_media score_plugin_gfx
-    avformat avutil
+    avformat avutil swscale
 )
 
 # Target-specific options

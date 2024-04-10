@@ -23,6 +23,7 @@ score_addon_ndi::score_addon_ndi()
     });
   }
   */
+  qRegisterMetaType<Ndi::OutputSettings>();
 }
 
 score_addon_ndi::~score_addon_ndi() { }

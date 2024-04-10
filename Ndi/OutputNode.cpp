@@ -3,6 +3,7 @@
 #include <Gfx/GfxParameter.hpp>
 #include <Gfx/Graph/RenderList.hpp>
 #include <Gfx/SharedOutputSettings.hpp>
+#include <Video/Rescale.hpp>
 
 #include <score/gfx/OpenGL.hpp>
 
@@ -13,18 +14,26 @@
 #include <QtGui/private/qrhigles2_p.h>
 
 #include <Ndi/OutputNode.hpp>
+#include <Ndi/OutputSettings.hpp>
+
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/pixdesc.h>
+#include <libswscale/swscale.h>
+struct SwsContext;
+}
 
 #include <wobjectimpl.h>
 W_OBJECT_IMPL(Ndi::OutputDevice)
 namespace Ndi
 {
-
+struct OutputSettings;
 struct OutputNode : score::gfx::OutputNode
 {
-  OutputNode(const Ndi::Loader& ndi, const Gfx::SharedOutputSettings& set);
+  OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set);
   virtual ~OutputNode();
 
-  Gfx::SharedOutputSettings m_settings;
+  Ndi::OutputSettings m_settings;
   std::weak_ptr<score::gfx::RenderList> m_renderer{};
   QRhiTexture* m_texture{};
   QRhiTextureRenderTarget* m_renderTarget{};
@@ -33,6 +42,8 @@ struct OutputNode : score::gfx::OutputNode
   QRhiReadbackResult m_readback;
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
+  SwsContext* m_swsCtx{};
+  AVFrame* avframe{};
   bool m_hasSender{};
 
   void startRendering() override;
@@ -62,7 +73,7 @@ class ndi_output_device : public ossia::net::device_base
 
 public:
   ndi_output_device(
-      const Ndi::Loader& ndi, const Gfx::SharedOutputSettings& set,
+      const Ndi::Loader& ndi, const Ndi::OutputSettings& set,
       std::unique_ptr<ossia::net::protocol_base> proto, std::string name)
       : ossia::net::device_base{std::move(proto)}
       , root{
@@ -75,16 +86,42 @@ public:
   Gfx::gfx_node_base& get_root_node() override { return root; }
 };
 
-OutputNode::OutputNode(const Ndi::Loader& ndi, const Gfx::SharedOutputSettings& set)
+OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     : score::gfx::OutputNode{}
     , m_settings{set}
     , m_ndi{ndi}
     , m_sender{m_ndi}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
+
+  AVPixelFormat fmt{AV_PIX_FMT_RGBA};
+  if(m_settings.format == "UYVY")
+  {
+    fmt = AV_PIX_FMT_UYVY422;
+  }
+
+  if(fmt != AV_PIX_FMT_RGBA)
+  {
+    m_swsCtx = sws_getContext(
+        m_settings.width, m_settings.height, AV_PIX_FMT_RGBA, m_settings.width,
+        m_settings.height, AV_PIX_FMT_UYVY422, 0, 0, 0, 0);
+
+    avframe = av_frame_alloc();
+    avframe->format = AV_PIX_FMT_UYVY422;
+    avframe->width = m_settings.width;
+    avframe->height = m_settings.height;
+    av_frame_get_buffer(avframe, 0);
+  }
 }
 
-OutputNode::~OutputNode() { }
+OutputNode::~OutputNode()
+{
+  if(m_swsCtx)
+  {
+    sws_freeContext(m_swsCtx);
+    av_frame_free(&avframe);
+  }
+}
 bool OutputNode::canRender() const
 {
   return bool(m_renderState);
@@ -111,11 +148,30 @@ void OutputNode::render()
 
     if(renderer->renderers.size() > 1)
     {
-      NDIlib_video_frame_v2_t frame;
-      frame.xres = m_readback.pixelSize.width();
-      frame.yres = m_readback.pixelSize.height();
-      frame.FourCC = NDIlib_FourCC_type_RGBA;
-      frame.p_data = (uint8_t*)m_readback.data.data();
+      // Convert frame to UYVY
+      auto width = m_readback.pixelSize.width();
+      auto height = m_readback.pixelSize.height();
+
+      NDIlib_video_frame_v2_t frame{};
+      frame.xres = width;
+      frame.yres = height;
+
+      uint8_t* inData[1] = {(uint8_t*)m_readback.data.data()};
+      int inLinesize[1] = {4 * width};
+
+      if(m_settings.format == "UYVY")
+      {
+        sws_scale(
+            m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
+
+        frame.FourCC = NDIlib_FourCC_video_type_UYVY;
+        frame.p_data = (uint8_t*)avframe->data[0];
+      }
+      else if(m_settings.format == "RGBA")
+      {
+        frame.FourCC = NDIlib_FourCC_video_type_RGBA;
+        frame.p_data = (uint8_t*)m_readback.data.data();
+      }
       m_sender.send_video(frame);
     }
   }
@@ -208,7 +264,7 @@ bool OutputDevice::reconnect()
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
     if(plug)
     {
-      auto set = m_settings.deviceSpecificSettings.value<Gfx::SharedOutputSettings>();
+      auto set = m_settings.deviceSpecificSettings.value<Ndi::OutputSettings>();
 
       m_protocol = new Gfx::gfx_protocol_base{plug->exec};
       m_dev = std::make_unique<ndi_output_device>(
