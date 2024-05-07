@@ -163,6 +163,8 @@ void InputStream::buffer_thread() noexcept
     if(auto f = read_frame_impl())
     {
       m_frames.enqueue(f);
+      if(m_frames.size() > 2)
+        m_frames.release(m_frames.dequeue_one());
     }
   }
 }

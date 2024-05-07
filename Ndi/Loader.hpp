@@ -149,6 +149,11 @@ struct Loader
   {
     return m_lib->recv_ptz_exposure_manual(recv, pan);
   }
+  auto send_get_no_connections(
+      NDIlib_send_instance_t s, uint32_t timeout_in_ms) const noexcept
+  {
+    return m_lib->send_get_no_connections(s, timeout_in_ms);
+  }
 
 private:
   void* m_ndi_dll{};
@@ -169,6 +174,10 @@ struct Sender
   ~Sender() { ndi.send_destroy(impl); }
 
   void send_video(NDIlib_video_frame_v2_t& frame) { ndi.send_send_video(impl, frame); }
+  int get_no_connections(uint32_t timeout)
+  {
+    return ndi.send_get_no_connections(impl, timeout);
+  }
 };
 
 struct Finder

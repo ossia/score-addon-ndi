@@ -148,31 +148,34 @@ void OutputNode::render()
 
     if(renderer->renderers.size() > 1)
     {
-      // Convert frame to UYVY
-      auto width = m_readback.pixelSize.width();
-      auto height = m_readback.pixelSize.height();
-
-      NDIlib_video_frame_v2_t frame{};
-      frame.xres = width;
-      frame.yres = height;
-
-      uint8_t* inData[1] = {(uint8_t*)m_readback.data.data()};
-      int inLinesize[1] = {4 * width};
-
-      if(m_settings.format == "UYVY")
+      if(m_sender.get_no_connections(0) > 0)
       {
-        sws_scale(
-            m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
+        // Convert frame to UYVY
+        auto width = m_readback.pixelSize.width();
+        auto height = m_readback.pixelSize.height();
 
-        frame.FourCC = NDIlib_FourCC_video_type_UYVY;
-        frame.p_data = (uint8_t*)avframe->data[0];
+        NDIlib_video_frame_v2_t frame{};
+        frame.xres = width;
+        frame.yres = height;
+
+        uint8_t* inData[1] = {(uint8_t*)m_readback.data.data()};
+        int inLinesize[1] = {4 * width};
+
+        if(m_settings.format == "UYVY")
+        {
+          sws_scale(
+              m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
+
+          frame.FourCC = NDIlib_FourCC_video_type_UYVY;
+          frame.p_data = (uint8_t*)avframe->data[0];
+        }
+        else if(m_settings.format == "RGBA")
+        {
+          frame.FourCC = NDIlib_FourCC_video_type_RGBA;
+          frame.p_data = (uint8_t*)m_readback.data.data();
+        }
+        m_sender.send_video(frame);
       }
-      else if(m_settings.format == "RGBA")
-      {
-        frame.FourCC = NDIlib_FourCC_video_type_RGBA;
-        frame.p_data = (uint8_t*)m_readback.data.data();
-      }
-      m_sender.send_video(frame);
     }
   }
 }
