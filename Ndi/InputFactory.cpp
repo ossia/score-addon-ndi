@@ -70,6 +70,11 @@ QString InputFactory::prettyName() const noexcept
   return QObject::tr("NDI Input");
 }
 
+QUrl InputFactory::manual() const noexcept
+{
+  return QUrl("https://ossia.io/score-docs/devices/ndi-device.html");
+}
+
 Device::DeviceEnumerators
 InputFactory::getEnumerators(const score::DocumentContext& ctx) const
 {

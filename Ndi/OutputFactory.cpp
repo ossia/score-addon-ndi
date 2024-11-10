@@ -71,6 +71,11 @@ QString OutputFactory::prettyName() const noexcept
   return QObject::tr("NDI Output");
 }
 
+QUrl OutputFactory::manual() const noexcept
+{
+  return QUrl("https://ossia.io/score-docs/devices/ndi-device.html");
+}
+
 Device::DeviceInterface* OutputFactory::makeDevice(
     const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& doc,
     const score::DocumentContext& ctx)

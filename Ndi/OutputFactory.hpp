@@ -20,6 +20,7 @@ class OutputFactory final : public Gfx::SharedOutputProtocolFactory
   SCORE_CONCRETE("07651c13-83de-48b8-a450-abe2891051e8")
 public:
   QString prettyName() const noexcept override;
+  QUrl manual() const noexcept override;
 
   Device::DeviceInterface* makeDevice(
       const Device::DeviceSettings& settings, const Explorer::DeviceDocumentPlugin& doc,
