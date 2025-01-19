@@ -210,9 +210,7 @@ void OutputNode::createOutput(
   params.fallbackSurface = m_renderState->surface;
   score::GLCapabilities caps;
   caps.setupFormat(params.format);
-#include <Gfx/Qt5CompatPop>
   m_renderState->rhi = QRhi::create(QRhi::OpenGLES2, &params, {});
-#include <Gfx/Qt5CompatPush>
   m_renderState->renderSize = QSize(m_settings.width, m_settings.height);
   m_renderState->outputSize = m_renderState->renderSize;
   m_renderState->api = score::gfx::GraphicsApi::OpenGL;
@@ -287,5 +285,3 @@ bool OutputDevice::reconnect()
   return connected();
 }
 }
-
-#include <Gfx/Qt5CompatPop>
