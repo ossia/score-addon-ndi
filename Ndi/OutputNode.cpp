@@ -39,7 +39,9 @@ struct OutputNode : score::gfx::OutputNode
   QRhiTextureRenderTarget* m_renderTarget{};
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
-  QRhiReadbackResult m_readback;
+  Gfx::InvertYRenderer* m_inv_y_renderer{};
+  QRhiReadbackResult m_readback[2];
+  QRhiReadbackResult* m_currentReadback{&m_readback[0]};
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
   SwsContext* m_swsCtx{};
@@ -150,15 +152,16 @@ void OutputNode::render()
     {
       if(m_sender.get_no_connections(0) > 0)
       {
+        auto& readback = *m_currentReadback;
         // Convert frame to UYVY
-        auto width = m_readback.pixelSize.width();
-        auto height = m_readback.pixelSize.height();
+        auto width = readback.pixelSize.width();
+        auto height = readback.pixelSize.height();
 
         NDIlib_video_frame_v2_t frame{};
         frame.xres = width;
         frame.yres = height;
 
-        uint8_t* inData[1] = {(uint8_t*)m_readback.data.data()};
+        uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
         int inLinesize[1] = {4 * width};
 
         if(m_settings.format == "UYVY")
@@ -172,11 +175,16 @@ void OutputNode::render()
         else if(m_settings.format == "RGBA")
         {
           frame.FourCC = NDIlib_FourCC_video_type_RGBA;
-          frame.p_data = (uint8_t*)m_readback.data.data();
+          frame.p_data = (uint8_t*)readback.data.data();
         }
-        m_sender.send_video(frame);
+        m_sender.send_video_async(frame);
       }
     }
+    if(m_currentReadback == m_readback + 0)
+      m_currentReadback = m_readback + 1;
+    else
+      m_currentReadback = m_readback + 0;
+    m_inv_y_renderer->updateReadback(*m_currentReadback);
   }
 }
 
@@ -242,7 +250,8 @@ OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
   score::gfx::TextureRenderTarget rt{
       m_texture, nullptr, nullptr, m_renderState->renderPassDescriptor, m_renderTarget};
-  return new Gfx::InvertYRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback)};
+  return const_cast<Gfx::InvertYRenderer*&>(m_inv_y_renderer)
+         = new Gfx::InvertYRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback[0])};
 }
 
 OutputDevice::OutputDevice(

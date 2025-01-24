@@ -27,6 +27,11 @@ struct Loader
   {
     m_lib->send_send_video_v2(sender, &frame);
   }
+  auto send_send_video_async(
+      NDIlib_send_instance_t sender, NDIlib_video_frame_v2_t& frame) const noexcept
+  {
+    m_lib->send_send_video_async_v2(sender, &frame);
+  }
 
   // Find API
   auto find_create() const noexcept { return m_lib->find_create_v2(nullptr); }
@@ -174,6 +179,10 @@ struct Sender
   ~Sender() { ndi.send_destroy(impl); }
 
   void send_video(NDIlib_video_frame_v2_t& frame) { ndi.send_send_video(impl, frame); }
+  void send_video_async(NDIlib_video_frame_v2_t& frame)
+  {
+    ndi.send_send_video_async(impl, frame);
+  }
   int get_no_connections(uint32_t timeout)
   {
     return ndi.send_get_no_connections(impl, timeout);
