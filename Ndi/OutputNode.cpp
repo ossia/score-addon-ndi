@@ -250,8 +250,8 @@ OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
   score::gfx::TextureRenderTarget rt{
       m_texture, nullptr, nullptr, m_renderState->renderPassDescriptor, m_renderTarget};
-  return const_cast<Gfx::InvertYRenderer*&>(m_inv_y_renderer)
-         = new Gfx::InvertYRenderer{rt, const_cast<QRhiReadbackResult&>(m_readback[0])};
+  return const_cast<Gfx::InvertYRenderer*&>(m_inv_y_renderer) = new Gfx::InvertYRenderer{
+             *this, rt, const_cast<QRhiReadbackResult&>(m_readback[0])};
 }
 
 OutputDevice::OutputDevice(
