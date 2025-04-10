@@ -7,7 +7,7 @@
 #include <Gfx/GfxInputDevice.hpp>
 #include <Gfx/Graph/VideoNode.hpp>
 #include <Gfx/SharedInputSettings.hpp>
-#include <Video/CameraInput.hpp>
+#include <Video/ExternalInput.hpp>
 #include <Video/FrameQueue.hpp>
 #include <Video/VideoInterface.hpp>
 
