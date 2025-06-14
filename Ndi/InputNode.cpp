@@ -400,6 +400,8 @@ bool InputDevice::reconnect()
       else
         connect(
             m_stream.get(), &InputStream::ptz_changed, this, &InputDevice::createPtz);
+
+      deviceChanged(nullptr, m_dev.get());
     }
   }
   catch(std::exception& e)
