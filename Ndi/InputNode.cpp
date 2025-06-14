@@ -367,6 +367,10 @@ void InputDevice::disconnect()
 {
   m_stream.reset();
   GfxInputDevice::disconnect();
+
+  auto prev = std::move(m_dev);
+  m_dev = {};
+  deviceChanged(prev.get(), nullptr);
 }
 
 bool InputDevice::reconnect()

@@ -262,6 +262,14 @@ OutputDevice::OutputDevice(
 
 OutputDevice::~OutputDevice() { }
 
+void OutputDevice::disconnect()
+{
+  GfxOutputDevice::disconnect();
+  auto prev = std::move(m_dev);
+  m_dev = {};
+  deviceChanged(prev.get(), nullptr);
+}
+
 bool OutputDevice::reconnect()
 {
   disconnect();
@@ -280,6 +288,7 @@ bool OutputDevice::reconnect()
       m_dev = std::make_unique<ndi_output_device>(
           ndi, set, std::unique_ptr<ossia::net::protocol_base>(m_protocol),
           m_settings.name.toStdString());
+      deviceChanged(nullptr, m_dev.get());
     }
   }
   catch(std::exception& e)
