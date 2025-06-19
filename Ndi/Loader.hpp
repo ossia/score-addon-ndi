@@ -18,6 +18,10 @@ struct Loader
 
   // Send API
   auto send_create() const noexcept { return m_lib->send_create(nullptr); }
+  auto send_create(NDIlib_send_create_t* ptr) const noexcept
+  {
+    return m_lib->send_create(ptr);
+  }
   auto send_destroy(NDIlib_send_instance_t sender) const noexcept
   {
     m_lib->send_destroy(sender);
@@ -168,12 +172,20 @@ private:
 struct Sender
 {
   const Loader& ndi;
+  std::string name;
+  NDIlib_send_create_t creation_settings{};
   NDIlib_send_instance_t impl{};
 
-  Sender(const Loader& ndi)
+  Sender(const Loader& ndi, const QString& name)
       : ndi{ndi}
-      , impl{ndi.send_create()}
   {
+    this->name = name.toStdString();
+    creation_settings.p_ndi_name = this->name.c_str();
+    creation_settings.p_groups = nullptr;
+    creation_settings.clock_audio = false;
+    creation_settings.clock_video = true;
+
+    impl = ndi.send_create(&creation_settings);
   }
 
   ~Sender() { ndi.send_destroy(impl); }

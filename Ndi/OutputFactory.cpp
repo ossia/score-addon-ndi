@@ -48,11 +48,11 @@ public:
 
     const auto& base_s = set.deviceSpecificSettings.value<Gfx::SharedOutputSettings>();
     OutputSettings specif{
-        .path = base_s.path,
+        .path = this->m_deviceNameEdit->text(),
         .width = base_s.width,
         .height = base_s.height,
-        .rate = base_s.rate};
-    specif.format = m_format->currentText();
+        .rate = base_s.rate,
+        .format = m_format->currentText()};
 
     set.deviceSpecificSettings = QVariant::fromValue(std::move(specif));
     return set;

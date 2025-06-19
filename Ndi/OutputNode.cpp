@@ -92,15 +92,13 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     : score::gfx::OutputNode{}
     , m_settings{set}
     , m_ndi{ndi}
-    , m_sender{m_ndi}
+    , m_sender{m_ndi, set.path}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
 
   AVPixelFormat fmt{AV_PIX_FMT_RGBA};
   if(m_settings.format == "UYVY")
-  {
     fmt = AV_PIX_FMT_UYVY422;
-  }
 
   if(fmt != AV_PIX_FMT_RGBA)
   {
@@ -160,6 +158,9 @@ void OutputNode::render()
         NDIlib_video_frame_v2_t frame{};
         frame.xres = width;
         frame.yres = height;
+        frame.frame_rate_N = this->m_settings.rate * 10000;
+        frame.frame_rate_D = 10000;
+        frame.frame_format_type = NDIlib_frame_format_type_progressive;
 
         uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
         int inLinesize[1] = {4 * width};
@@ -171,11 +172,13 @@ void OutputNode::render()
 
           frame.FourCC = NDIlib_FourCC_video_type_UYVY;
           frame.p_data = (uint8_t*)avframe->data[0];
+          frame.line_stride_in_bytes = avframe->linesize[0];
         }
         else if(m_settings.format == "RGBA")
         {
           frame.FourCC = NDIlib_FourCC_video_type_RGBA;
           frame.p_data = (uint8_t*)readback.data.data();
+          frame.line_stride_in_bytes = 4 * width;
         }
         m_sender.send_video_async(frame);
       }
