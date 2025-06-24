@@ -92,7 +92,7 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     : score::gfx::OutputNode{}
     , m_settings{set}
     , m_ndi{ndi}
-    , m_sender{m_ndi, set.path}
+    , m_sender{m_ndi, set.path.toStdString()}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
 

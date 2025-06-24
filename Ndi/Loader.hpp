@@ -1,4 +1,6 @@
 #pragma once
+#include <string>
+
 #include <Processing.NDI.Lib.h>
 
 namespace Ndi
@@ -176,10 +178,10 @@ struct Sender
   NDIlib_send_create_t creation_settings{};
   NDIlib_send_instance_t impl{};
 
-  Sender(const Loader& ndi, const QString& name)
+  Sender(const Loader& ndi, const std::string& name)
       : ndi{ndi}
+      , name{name}
   {
-    this->name = name.toStdString();
     creation_settings.p_ndi_name = this->name.c_str();
     creation_settings.p_groups = nullptr;
     creation_settings.clock_audio = false;
