@@ -57,9 +57,7 @@ struct OutputNode : score::gfx::OutputNode
   void setRenderer(std::shared_ptr<score::gfx::RenderList>) override;
   score::gfx::RenderList* renderer() const override;
 
-  void createOutput(
-      score::gfx::GraphicsApi graphicsApi, std::function<void()> onReady,
-      std::function<void()> onUpdate, std::function<void()> onResize) override;
+  void createOutput(score::gfx::OutputConfiguration) override;
   void destroyOutput() override;
 
   std::shared_ptr<score::gfx::RenderState> renderState() const override;
@@ -209,12 +207,9 @@ score::gfx::RenderList* OutputNode::renderer() const
   return m_renderer.lock().get();
 }
 
-void OutputNode::createOutput(
-    score::gfx::GraphicsApi graphicsApi, std::function<void()> onReady,
-    std::function<void()> onUpdate, std::function<void()> onResize)
+void OutputNode::createOutput(score::gfx::OutputConfiguration conf)
 {
   m_renderState = std::make_shared<score::gfx::RenderState>();
-  m_update = onUpdate;
 
   m_renderState->surface = QRhiGles2InitParams::newFallbackSurface();
   QRhiGles2InitParams params;
@@ -238,7 +233,8 @@ void OutputNode::createOutput(
   m_renderTarget->setRenderPassDescriptor(m_renderState->renderPassDescriptor);
   m_renderTarget->create();
 
-  onReady();
+  if(conf.onReady)
+    conf.onReady();
 }
 
 void OutputNode::destroyOutput() { }
