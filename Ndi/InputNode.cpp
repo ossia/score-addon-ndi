@@ -39,6 +39,216 @@ W_OBJECT_IMPL(Ndi::InputDevice)
 
 namespace Ndi
 {
+
+// Convert a NDI frame into an AVFrame.
+// The frame planes are reference-counted through AVBufferRef
+// so that av_frame_free frees the frame data.
+AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
+                              NDIlib_recv_instance_t recv,
+                              NDIlib_video_frame_v2_t *ndi,
+                              AVFrame* f)
+{
+  if (!f)
+    return nullptr;
+
+  int w = ndi->xres, h = ndi->yres;
+  int s = ndi->line_stride_in_bytes;
+
+  f->width  = w;
+  f->height = h;
+  f->pts    = ndi->timestamp;
+
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 0, 0)
+  switch (ndi->frame_format_type) {
+    case NDIlib_frame_format_type_progressive:
+      break;
+    case NDIlib_frame_format_type_field_0:
+      f->flags |= AV_FRAME_FLAG_INTERLACED;
+      f->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
+      break;
+    case NDIlib_frame_format_type_field_1:
+      f->flags |= AV_FRAME_FLAG_INTERLACED;
+      break;
+    case NDIlib_frame_format_type_interleaved:
+    default:
+      av_frame_free(&f);
+      return nullptr;
+  }
+#else
+  switch (ndi->frame_format_type) {
+    case NDIlib_frame_format_type_interleaved:
+      f->interlaced_frame = 1; f->top_field_first = 1; break;
+    case NDIlib_frame_format_type_field_0:
+      f->interlaced_frame = 1; f->top_field_first = 1; break;
+    case NDIlib_frame_format_type_field_1:
+      f->interlaced_frame = 1; f->top_field_first = 0; break;
+    default: break;
+  }
+#endif
+
+  switch (ndi->FourCC) {
+    case NDIlib_FourCC_video_type_UYVY: f->format = AV_PIX_FMT_UYVY422; break;
+    case NDIlib_FourCC_video_type_UYVA: f->format = AV_PIX_FMT_UYVY422; break; // alpha dropped
+    case NDIlib_FourCC_video_type_BGRA: f->format = AV_PIX_FMT_BGRA;    break;
+    case NDIlib_FourCC_video_type_BGRX: f->format = AV_PIX_FMT_BGR0;    break;
+    case NDIlib_FourCC_video_type_RGBA: f->format = AV_PIX_FMT_RGBA;    break;
+    case NDIlib_FourCC_video_type_RGBX: f->format = AV_PIX_FMT_RGB0;    break;
+    case NDIlib_FourCC_video_type_NV12: f->format = AV_PIX_FMT_NV12;    break;
+    case NDIlib_FourCC_video_type_I420: f->format = AV_PIX_FMT_YUV420P; break;
+    case NDIlib_FourCC_video_type_YV12: f->format = AV_PIX_FMT_YUV420P; break; // planes reordered
+#ifdef AV_PIX_FMT_P216LE
+    case NDIlib_FourCC_video_type_P216: f->format = AV_PIX_FMT_P216LE;  break;
+    case NDIlib_FourCC_video_type_PA16: f->format = AV_PIX_FMT_P216LE;  break; // alpha dropped
+#endif
+    default:
+      av_frame_free(&f);
+      return nullptr;
+  }
+
+  struct NDIVideoCtx {
+    const Ndi::Loader* loader{};
+    NDIlib_recv_instance_t recv{};
+    NDIlib_video_frame_v2_t frame{};
+  };
+  auto ctx = (NDIVideoCtx*)av_malloc(sizeof(NDIVideoCtx));
+  if (!ctx)
+  {
+    av_frame_free(&f);
+    return nullptr;
+  }
+  ctx->loader = &loader;
+  ctx->recv  = recv;
+  ctx->frame = *ndi;
+
+  size_t total;
+  switch (ndi->FourCC) {
+    case NDIlib_FourCC_video_type_I420:
+    case NDIlib_FourCC_video_type_YV12:
+      total = (size_t)s * h + 2 * ((s / 2) * (h / 2));
+      break;
+    case NDIlib_FourCC_video_type_NV12:
+      total = (size_t)s * h + (size_t)s * (h / 2);
+      break;
+    case NDIlib_FourCC_video_type_P216:
+      total = (size_t)s * h * 2;
+      break;
+    case NDIlib_FourCC_video_type_PA16:
+      total = (size_t)s * h * 3;
+      break;
+    case NDIlib_FourCC_video_type_UYVA:
+      total = (size_t)s * h * 2;
+      break;
+    default:
+      total = (size_t)s * h;
+      break;
+  }
+
+  AVBufferRef *buf = av_buffer_create(ndi->p_data, total,
+                                      [](void *opaque, uint8_t *data)
+  { // dtor
+    auto* ctx = (NDIVideoCtx *)opaque;
+    ctx->loader->recv_free_video(ctx->recv, &ctx->frame);
+    av_free(ctx);
+  }, ctx,  AV_BUFFER_FLAG_READONLY);
+  if (!buf) { av_free(ctx); av_frame_free(&f); return nullptr; }
+
+#define ADDREF(slot) \
+  do { \
+        f->buf[(slot)] = av_buffer_ref(buf); \
+        if (!f->buf[(slot)]) goto oom; \
+  } while (0)
+
+  switch (ndi->FourCC) {
+
+    case NDIlib_FourCC_video_type_UYVA:
+      // FIXME no proper zero-copy alpha format in ffmpeg for this yet :(
+    case NDIlib_FourCC_video_type_UYVY:
+
+    case NDIlib_FourCC_video_type_BGRA:
+    case NDIlib_FourCC_video_type_BGRX:
+    case NDIlib_FourCC_video_type_RGBA:
+    case NDIlib_FourCC_video_type_RGBX:
+      f->buf[0]      = buf;  // transfer ownership
+      f->data[0]     = ndi->p_data;
+      f->linesize[0] = s;
+      break;
+
+    case NDIlib_FourCC_video_type_NV12:
+      f->buf[0] = buf;
+      ADDREF(1);
+      f->data[0]     = ndi->p_data;
+      f->data[1]     = ndi->p_data + (size_t)s * h;
+      f->linesize[0] = s;
+      f->linesize[1] = s;
+      break;
+
+    case NDIlib_FourCC_video_type_I420: {
+      int cs = s / 2, ch = h / 2;
+      f->buf[0] = buf;
+      ADDREF(1); ADDREF(2);
+      f->data[0]     = ndi->p_data;
+      f->data[1]     = ndi->p_data + (size_t)s * h;
+      f->data[2]     = ndi->p_data + (size_t)s * h + (size_t)cs * ch;
+      f->linesize[0] = s;
+      f->linesize[1] = cs;
+      f->linesize[2] = cs;
+      break;
+    }
+
+    case NDIlib_FourCC_video_type_YV12: {
+      int cs = s / 2, ch = h / 2;
+      uint8_t *cr = ndi->p_data + (size_t)s  * h;
+      uint8_t *cb = cr           + (size_t)cs * ch;
+      f->buf[0] = buf;
+      ADDREF(1); ADDREF(2);
+      f->data[0]     = ndi->p_data;
+      f->data[1]     = cb;
+      f->data[2]     = cr;
+      f->linesize[0] = s;
+      f->linesize[1] = cs;
+      f->linesize[2] = cs;
+      break;
+    }
+
+    case NDIlib_FourCC_video_type_P216:
+      f->buf[0] = buf;
+      ADDREF(1);
+      f->data[0]     = ndi->p_data;
+      f->data[1]     = ndi->p_data + (size_t)s * h;
+      f->linesize[0] = s;
+      f->linesize[1] = s;
+      break;
+
+    case NDIlib_FourCC_video_type_PA16:
+      // FIXME ffmpeg does not have any compatible format yet.
+      // Maybe we should sws_scale :'(
+      f->buf[0] = buf;
+      ADDREF(1);
+      f->data[0]     = ndi->p_data;
+      f->data[1]     = ndi->p_data + (size_t)s * h;
+      f->linesize[0] = s;
+      f->linesize[1] = s;
+      break;
+
+    default:
+      goto oom;
+  }
+
+#undef ADDREF
+
+  if (ndi->picture_aspect_ratio > 0.0f && w > 0 && h > 0)
+  {
+    f->sample_aspect_ratio = av_d2q(
+        (double)ndi->picture_aspect_ratio * h / w, 1 << 20);
+  }
+
+  return f;
+oom:
+  av_buffer_unref(&buf);
+  av_frame_free(&f);
+  return nullptr;
+}
+
 class InputStream final
     : public QObject
     , public Video::ExternalInput
@@ -61,7 +271,6 @@ public:
 
 private:
   void timerEvent(QTimerEvent* t) override;
-  AVFrame* get_new_frame() noexcept;
   void buffer_thread() noexcept;
   AVFrame* read_frame_impl() noexcept;
   std::thread m_thread;
@@ -137,13 +346,6 @@ AVFrame* InputStream::dequeue_frame() noexcept
 
 void InputStream::release_frame(AVFrame* frame) noexcept
 {
-  NDIlib_video_frame_v2_t ndi_frame{};
-  ndi_frame.p_data = frame->data[0];
-  ndi_frame.p_metadata = nullptr;
-  frame->data[0] = nullptr;
-
-  m_receiver.free_video(&ndi_frame);
-
   m_frames.release(frame);
 }
 
@@ -165,8 +367,7 @@ void InputStream::buffer_thread() noexcept
       m_frames.enqueue(f);
       if(m_frames.size() > 2)
       {
-        auto prev = m_frames.dequeue_one();
-        release_frame(prev);
+        release_frame(m_frames.dequeue_one());
       }
     }
   }
@@ -221,16 +422,16 @@ AVFrame* InputStream::read_frame_impl() noexcept
       {
         AVFrame* frame = m_frames.newFrame().release();
 
-        frame->format = *format;
-
-        frame->data[0] = ndi_frame.p_data;
-        frame->linesize[0] = ndi_frame.line_stride_in_bytes;
-        frame->width = ndi_frame.xres;
-        frame->height = ndi_frame.yres;
-        height = frame->height;
-        width = frame->width;
-
-        return frame;
+        if(auto res = ndi_video_to_avframe(this->m_ndi, this->m_receiver.impl, &ndi_frame, frame))
+        {
+          return res;
+        }
+        else
+        {
+          av_frame_free(&frame);
+          this->m_ndi.recv_free_video(this->m_receiver.impl, &ndi_frame);
+          return nullptr;
+        }
       }
     }
 
