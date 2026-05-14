@@ -2,6 +2,7 @@
 #include <Gfx/GfxExecContext.hpp>
 #include <Gfx/GfxParameter.hpp>
 #include <Gfx/Graph/RenderList.hpp>
+#include <Gfx/Graph/RenderState.hpp>
 #include <Gfx/SharedOutputSettings.hpp>
 #include <Video/Rescale.hpp>
 
@@ -10,6 +11,11 @@
 #include <ossia/network/base/device.hpp>
 
 #include <QOffscreenSurface>
+
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <QTimer>
 #include <QtGui/private/qrhigles2_p.h>
 
@@ -40,13 +46,23 @@ struct OutputNode : score::gfx::OutputNode
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
   Gfx::InvertYRenderer* m_inv_y_renderer{};
-  QRhiReadbackResult m_readback[2];
-  QRhiReadbackResult* m_currentReadback{&m_readback[0]};
+  QRhiReadbackResult m_readback[3];
+  int m_readbackIndex{0};  // Next buffer for readback
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
   SwsContext* m_swsCtx{};
   AVFrame* avframe{};
   bool m_hasSender{};
+
+  // Async sender thread members
+  std::thread m_senderThread;
+  std::mutex m_mutex;
+  std::condition_variable m_cv;
+  std::atomic<bool> m_running{false};
+  std::atomic<bool> m_frameReady{false};
+  std::atomic<int> m_sendIndex{-1};  // Buffer ready for sender
+
+  void senderThreadFunc();
 
   void startRendering() override;
   void render() override;
@@ -93,6 +109,7 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     , m_sender{m_ndi, set.path.toStdString()}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
+  qDebug()<<"CREATED SENDER111"<<set.path;
 
   AVPixelFormat fmt{AV_PIX_FMT_RGBA};
   if(m_settings.format == "UYVY")
@@ -114,18 +131,89 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
 
 OutputNode::~OutputNode()
 {
+  // Ensure sender thread is stopped
+  if(m_running)
+  {
+    m_running = false;
+    m_cv.notify_one();
+    if(m_senderThread.joinable())
+      m_senderThread.join();
+  }
+
   if(m_swsCtx)
   {
     sws_freeContext(m_swsCtx);
     av_frame_free(&avframe);
   }
 }
+
+void OutputNode::senderThreadFunc()
+{
+  while(m_running)
+  {
+    std::unique_lock lock(m_mutex);
+    m_cv.wait(lock, [this] { return m_frameReady.load() || !m_running.load(); });
+
+    if(!m_running)
+      break;
+
+    int idx = m_sendIndex.load();
+    if(idx >= 0)
+    {
+      m_frameReady = false;
+      lock.unlock();
+
+      // Read directly from the readback buffer
+      auto& readback = m_readback[idx];
+      auto width = readback.pixelSize.width();
+      auto height = readback.pixelSize.height();
+
+      NDIlib_video_frame_v2_t ndiFrame{};
+      ndiFrame.xres = width;
+      ndiFrame.yres = height;
+      ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
+      ndiFrame.frame_rate_D = 10000;
+      ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
+
+      uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
+      int inLinesize[1] = {4 * width};
+
+      if(m_settings.format == "UYVY")
+      {
+        sws_scale(m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
+
+        ndiFrame.FourCC = NDIlib_FourCC_video_type_UYVY;
+        ndiFrame.p_data = (uint8_t*)avframe->data[0];
+        ndiFrame.line_stride_in_bytes = avframe->linesize[0];
+      }
+      else if(m_settings.format == "RGBA")
+      {
+        ndiFrame.FourCC = NDIlib_FourCC_video_type_RGBA;
+        ndiFrame.p_data = (uint8_t*)readback.data.data();
+        ndiFrame.line_stride_in_bytes = 4 * width;
+      }
+      QElapsedTimer t;
+      t.restart();
+      m_sender.send_video_async(ndiFrame);
+      qDebug()<<"NDI: " << t.nsecsElapsed() / 1e6;
+    }
+    else
+    {
+      m_frameReady = false;
+    }
+  }
+}
+
 bool OutputNode::canRender() const
 {
   return bool(m_renderState);
 }
 
-void OutputNode::startRendering() { }
+void OutputNode::startRendering()
+{
+  m_running = true;
+  m_senderThread = std::thread(&OutputNode::senderThreadFunc, this);
+}
 
 void OutputNode::render()
 {
@@ -135,6 +223,8 @@ void OutputNode::render()
   auto renderer = m_renderer.lock();
   if(renderer && m_renderState)
   {
+    QElapsedTimer t;
+    t.restart();
     auto rhi = m_renderState->rhi;
     QRhiCommandBuffer* cb{};
     if(rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
@@ -143,49 +233,28 @@ void OutputNode::render()
     renderer->render(*cb);
 
     rhi->endOffscreenFrame();
+    qDebug()<<"R: " << t.nsecsElapsed() / 1e6;
+    t.restart();
 
     if(renderer->renderers.size() > 1)
     {
       if(m_sender.get_no_connections(0) > 0)
       {
-        auto& readback = *m_currentReadback;
-        // Convert frame to UYVY
-        auto width = readback.pixelSize.width();
-        auto height = readback.pixelSize.height();
-
-        NDIlib_video_frame_v2_t frame{};
-        frame.xres = width;
-        frame.yres = height;
-        frame.frame_rate_N = this->m_settings.rate * 10000;
-        frame.frame_rate_D = 10000;
-        frame.frame_format_type = NDIlib_frame_format_type_progressive;
-
-        uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
-        int inLinesize[1] = {4 * width};
-
-        if(m_settings.format == "UYVY")
+        // Signal sender thread with current readback buffer
         {
-          sws_scale(
-              m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
+          std::lock_guard lock(m_mutex);
+          m_sendIndex = m_readbackIndex;
+          m_frameReady = true;
+        }
+        m_cv.notify_one();
 
-          frame.FourCC = NDIlib_FourCC_video_type_UYVY;
-          frame.p_data = (uint8_t*)avframe->data[0];
-          frame.line_stride_in_bytes = avframe->linesize[0];
-        }
-        else if(m_settings.format == "RGBA")
-        {
-          frame.FourCC = NDIlib_FourCC_video_type_RGBA;
-          frame.p_data = (uint8_t*)readback.data.data();
-          frame.line_stride_in_bytes = 4 * width;
-        }
-        m_sender.send_video_async(frame);
+        qDebug()<<"to ndi: " << t.nsecsElapsed() / 1e6;
       }
     }
-    if(m_currentReadback == m_readback + 0)
-      m_currentReadback = m_readback + 1;
-    else
-      m_currentReadback = m_readback + 0;
-    m_inv_y_renderer->updateReadback(*m_currentReadback);
+
+    // Advance to next readback buffer
+    m_readbackIndex = (m_readbackIndex + 1) % 3;
+    m_inv_y_renderer->updateReadback(m_readback[m_readbackIndex]);
   }
 }
 
@@ -195,7 +264,13 @@ score::gfx::OutputNode::Configuration OutputNode::configuration() const noexcept
 }
 void OutputNode::onRendererChange() { }
 
-void OutputNode::stopRendering() { }
+void OutputNode::stopRendering()
+{
+  m_running = false;
+  m_cv.notify_one();
+  if(m_senderThread.joinable())
+    m_senderThread.join();
+}
 
 void OutputNode::setRenderer(std::shared_ptr<score::gfx::RenderList> r)
 {
@@ -209,18 +284,15 @@ score::gfx::RenderList* OutputNode::renderer() const
 
 void OutputNode::createOutput(score::gfx::OutputConfiguration conf)
 {
-  m_renderState = std::make_shared<score::gfx::RenderState>();
-
-  m_renderState->surface = QRhiGles2InitParams::newFallbackSurface();
-  QRhiGles2InitParams params;
-  params.fallbackSurface = m_renderState->surface;
-  score::GLCapabilities caps;
-  caps.setupFormat(params.format);
-  m_renderState->rhi = QRhi::create(QRhi::OpenGLES2, &params, {});
-  m_renderState->renderSize = QSize(m_settings.width, m_settings.height);
+  m_renderState = score::gfx::createRenderState(
+      conf.graphicsApi, QSize(m_settings.width, m_settings.height), nullptr);
+  if(!m_renderState || !m_renderState->rhi)
+  {
+    qWarning() << "Ndi::OutputNode: failed to create QRhi";
+    m_renderState.reset();
+    return;
+  }
   m_renderState->outputSize = m_renderState->renderSize;
-  m_renderState->api = score::gfx::GraphicsApi::OpenGL;
-  m_renderState->version = caps.qShaderVersion;
 
   auto rhi = m_renderState->rhi;
   m_texture = rhi->newTexture(
@@ -237,7 +309,23 @@ void OutputNode::createOutput(score::gfx::OutputConfiguration conf)
     conf.onReady();
 }
 
-void OutputNode::destroyOutput() { }
+void OutputNode::destroyOutput()
+{
+  if(!m_renderState)
+    return;
+
+  delete m_renderTarget;
+  m_renderTarget = nullptr;
+
+  delete m_renderState->renderPassDescriptor;
+  m_renderState->renderPassDescriptor = nullptr;
+
+  delete m_texture;
+  m_texture = nullptr;
+
+  m_renderState->destroy();
+  m_renderState.reset();
+}
 
 std::shared_ptr<score::gfx::RenderState> OutputNode::renderState() const
 {
