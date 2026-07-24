@@ -2,28 +2,59 @@
 
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
+#include <QCoreApplication>
 #include <QFormLayout>
 #include <QLabel>
 
 #include <Ndi/InputNode.hpp>
 #include <Ndi/Loader.hpp>
 
+#include <optional>
 #include <set>
 namespace Ndi
 {
 class InputEnumerator : public Device::DeviceEnumerator
 {
   std::set<QString> m_known;
-  Ndi::Finder find{Loader::instance()};
+  // Heap-owned so we can tear it down on aboutToQuit, before the NDI library
+  // is unloaded. The finder spawns the NDI discovery thread pool (mDNS / QUIC /
+  // IPCam-RTSP); if it is still alive when FreeLibrary() runs, NDI's DllMain
+  // detach handler deadlocks joining those threads and score.exe hangs at exit.
+  std::optional<Ndi::Finder> m_find;
+  int m_timer{};
 
 public:
-  InputEnumerator() { startTimer(1000); }
+  InputEnumerator()
+  {
+    m_find.emplace(Loader::instance());
+    m_timer = startTimer(1000);
+
+    // The enumerator can outlive normal shutdown (e.g. when owned by the QML
+    // engine, which never garbage-collects it), so guarantee the finder is
+    // destroyed while the NDI threads can still be joined cleanly.
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { shutdownFinder(); });
+  }
+
+  ~InputEnumerator() override { shutdownFinder(); }
+
+  void shutdownFinder()
+  {
+    if(m_timer)
+    {
+      killTimer(m_timer);
+      m_timer = 0;
+    }
+    m_find.reset();
+  }
 
   void timerEvent(QTimerEvent* ev) override
   {
+    if(!m_find)
+      return;
+
     uint32_t num_sources = 0;
-    find.wait_for_sources(10);
-    auto sources = find.get_current_sources(&num_sources);
+    m_find->wait_for_sources(10);
+    auto sources = m_find->get_current_sources(&num_sources);
 
     std::set<QString> new_nodes;
     for(uint32_t i = 0; i < num_sources; i++)
