@@ -143,7 +143,9 @@ void JSONWriter::write(Ndi::OutputSettings& n)
   n.width = obj["Width"].toDouble();
   n.height = obj["Height"].toDouble();
   n.rate = obj["Rate"].toDouble();
-  if(auto format = obj.tryGet("Format"))
+  // toString() is rapidjson's GetString(), which asserts on a non-string value:
+  // tryGet guards an absent key, not a present one of the wrong type.
+  if(auto format = obj.tryGet("Format"); format && format->isString())
     n.format = format->toString();
   else
     n.format = "RGBA";
