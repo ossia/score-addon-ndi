@@ -109,7 +109,7 @@ Loader::Loader()
     {
       if((m_ndi_dll = dlopen(ndi_name, RTLD_LOCAL | RTLD_LAZY)))
       {
-        ossia::logger().info("Found NDI: {}", ndi_path);
+        ossia::logger().info("Found NDI: {}", ndi_name);
         break;
       }
     }
