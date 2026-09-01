@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 project(score_addon_ndi LANGUAGES CXX)
 if(NOT TARGET score_lib_base)
-  include("${SCORE_SOURCE_DIR}/cmake/ScoreExternalAddon.cmake")
+  include(ScoreExternalAddon)
 else()
   if(NOT TARGET score_plugin_gfx)
     return()
