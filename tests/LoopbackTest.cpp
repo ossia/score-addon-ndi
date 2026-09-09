@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
+#include <string_view>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -100,11 +101,20 @@ int main()
   SwsContext* sws = sws_getContext(
       kWidth, kHeight, AV_PIX_FMT_RGBA, kWidth, kHeight, AV_PIX_FMT_UYVY422, 0,
       nullptr, nullptr, nullptr);
+  // describeVideoFrame writes into the staging frame for every format, so each
+  // one needs a frame laid out for it -- handing the RGBA path a UYVY422 frame
+  // would write 4 bytes per pixel into a 2-byte-per-pixel stride.
   AVFrame* staging = av_frame_alloc();
   staging->format = AV_PIX_FMT_UYVY422;
   staging->width = kWidth;
   staging->height = kHeight;
   av_frame_get_buffer(staging, 0);
+
+  AVFrame* rgbaStaging = av_frame_alloc();
+  rgbaStaging->format = AV_PIX_FMT_RGBA;
+  rgbaStaging->width = kWidth;
+  rgbaStaging->height = kHeight;
+  av_frame_get_buffer(rgbaStaging, 0);
 
   const std::string name = "score-ndi-loopback-" + std::to_string(::getpid());
   NDIlib_send_create_t sendCfg{};
@@ -153,7 +163,8 @@ int main()
   for(const Case c : {Case{"RGBA", 16}, Case{"UYVY", 48}})
   {
     NDIlib_video_frame_v2_t got{};
-    if(!roundtrip(c.format, rgba, sws, staging, sender, recv, got))
+    AVFrame* stage = (std::string_view{c.format} == "RGBA") ? rgbaStaging : staging;
+    if(!roundtrip(c.format, rgba, sws, stage, sender, recv, got))
     {
       std::printf("  skip %s: no frame came back within 10 s\n", c.format);
       continue;
@@ -185,6 +196,7 @@ int main()
   NDIlib_recv_destroy(recv);
   NDIlib_send_destroy(sender);
   av_frame_free(&staging);
+  av_frame_free(&rgbaStaging);
   sws_freeContext(sws);
   NDIlib_destroy();
 

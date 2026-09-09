@@ -126,15 +126,18 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     m_swsCtx = sws_getContext(
         m_settings.width, m_settings.height, AV_PIX_FMT_RGBA, m_settings.width,
         m_settings.height, AV_PIX_FMT_UYVY422, 0, 0, 0, 0);
+  }
 
-    for(auto& f : avframe)
-    {
-      f = av_frame_alloc();
-      f->format = AV_PIX_FMT_UYVY422;
-      f->width = m_settings.width;
-      f->height = m_settings.height;
-      av_frame_get_buffer(f, 0);
-    }
+  // Every format stages, RGBA included: the frame handed to send_video_async is
+  // read by the SDK until the next send, so it can never be the readback buffer,
+  // which the renderer takes back as soon as render() returns.
+  for(auto& f : avframe)
+  {
+    f = av_frame_alloc();
+    f->format = fmt;
+    f->width = m_settings.width;
+    f->height = m_settings.height;
+    av_frame_get_buffer(f, 0);
   }
 }
 
@@ -150,11 +153,10 @@ OutputNode::~OutputNode()
   }
 
   if(m_swsCtx)
-  {
     sws_freeContext(m_swsCtx);
-    for(auto& f : avframe)
-      av_frame_free(&f);
-  }
+
+  for(auto& f : avframe)
+    av_frame_free(&f);
 }
 
 void OutputNode::senderThreadFunc()

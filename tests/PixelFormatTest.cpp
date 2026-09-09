@@ -4,6 +4,7 @@
 #include <Ndi/VideoFrameFormat.hpp>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -36,23 +37,39 @@ int main()
       w, h, AV_PIX_FMT_RGBA, w, h, AV_PIX_FMT_UYVY422, 0, nullptr, nullptr, nullptr);
   CHECK(sws, "sws_getContext returned null");
 
+  // One staging frame per format: describeVideoFrame writes into it, so it has
+  // to be laid out for the format being described.
   AVFrame* staging = av_frame_alloc();
   staging->format = AV_PIX_FMT_UYVY422;
   staging->width = w;
   staging->height = h;
   CHECK(av_frame_get_buffer(staging, 0) == 0, "av_frame_get_buffer failed");
 
+  AVFrame* rgbaStaging = av_frame_alloc();
+  rgbaStaging->format = AV_PIX_FMT_RGBA;
+  rgbaStaging->width = w;
+  rgbaStaging->height = h;
+  CHECK(av_frame_get_buffer(rgbaStaging, 0) == 0, "av_frame_get_buffer failed");
+
   {
     NDIlib_video_frame_v2_t f{};
     const bool ok
-        = Ndi::describeVideoFrame("RGBA", rgba.data(), w, h, sws, staging, f);
+        = Ndi::describeVideoFrame("RGBA", rgba.data(), w, h, sws, rgbaStaging, f);
     CHECK(ok, "RGBA was refused");
     CHECK(f.FourCC == NDIlib_FourCC_video_type_RGBA, "RGBA: wrong FourCC");
-    CHECK(f.line_stride_in_bytes == 4 * w, "RGBA: stride %d, expected %d",
+    CHECK(f.line_stride_in_bytes >= 4 * w, "RGBA: stride %d below the packed minimum %d",
           f.line_stride_in_bytes, 4 * w);
-    CHECK(f.p_data == rgba.data(), "RGBA: must point at the readback, not a copy");
+    // The SDK reads p_data until the next send_video_async, while the renderer
+    // recycles the readback buffer immediately -- so this must never alias it.
+    CHECK(f.p_data == rgbaStaging->data[0], "RGBA: must point at the staging frame");
+    CHECK(f.p_data != rgba.data(), "RGBA: aliases the readback buffer");
+    // ...and the copy has to be faithful, row by row, at the staging stride.
+    for(int y = 0; y < h; y++)
+      CHECK(std::memcmp(f.p_data + size_t(y) * f.line_stride_in_bytes,
+                        rgba.data() + size_t(y) * 4 * w, size_t(4) * w) == 0,
+            "RGBA: staging row %d differs from the readback", y);
     CHECK(f.xres == w && f.yres == h, "RGBA: wrong dimensions");
-    std::printf("  ok RGBA   stride=%d\n", f.line_stride_in_bytes);
+    std::printf("  ok RGBA   stride=%d  copied %d rows\n", f.line_stride_in_bytes, h);
   }
 
   {
@@ -85,6 +102,7 @@ int main()
   std::printf("  ok refusal of the formats this addon does not write\n");
 
   av_frame_free(&staging);
+  av_frame_free(&rgbaStaging);
   sws_freeContext(sws);
   std::printf("\nndi pixel format tests: %s (%d failure%s)\n",
               failures ? "FAILED" : "passed", failures, failures == 1 ? "" : "s");
