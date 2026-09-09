@@ -1,4 +1,6 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
+#include <Ndi/VideoFrameFormat.hpp>
+
 #include <Gfx/GfxExecContext.hpp>
 #include <Gfx/GfxParameter.hpp>
 #include <Gfx/Graph/RenderList.hpp>
@@ -51,7 +53,12 @@ struct OutputNode : score::gfx::OutputNode
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
   SwsContext* m_swsCtx{};
-  AVFrame* avframe{};
+  // One staging frame per readback buffer. send_video_async keeps reading the
+  // buffer it was handed until the NEXT send_video_async, so a single frame
+  // cannot be reused: the sws_scale for frame N+1 would overwrite what the SDK
+  // is still reading from frame N. Rotating in step with m_readback gives the
+  // same two frames of slack that make the RGBA path safe.
+  AVFrame* avframe[3]{};
   bool m_hasSender{};
 
   // Async sender thread members
@@ -120,11 +127,14 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
         m_settings.width, m_settings.height, AV_PIX_FMT_RGBA, m_settings.width,
         m_settings.height, AV_PIX_FMT_UYVY422, 0, 0, 0, 0);
 
-    avframe = av_frame_alloc();
-    avframe->format = AV_PIX_FMT_UYVY422;
-    avframe->width = m_settings.width;
-    avframe->height = m_settings.height;
-    av_frame_get_buffer(avframe, 0);
+    for(auto& f : avframe)
+    {
+      f = av_frame_alloc();
+      f->format = AV_PIX_FMT_UYVY422;
+      f->width = m_settings.width;
+      f->height = m_settings.height;
+      av_frame_get_buffer(f, 0);
+    }
   }
 }
 
@@ -142,7 +152,8 @@ OutputNode::~OutputNode()
   if(m_swsCtx)
   {
     sws_freeContext(m_swsCtx);
-    av_frame_free(&avframe);
+    for(auto& f : avframe)
+      av_frame_free(&f);
   }
 }
 
@@ -174,23 +185,11 @@ void OutputNode::senderThreadFunc()
       ndiFrame.frame_rate_D = 10000;
       ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
 
-      uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
-      int inLinesize[1] = {4 * width};
+      if(!Ndi::describeVideoFrame(
+             m_settings.format.toStdString(), (const uint8_t*)readback.data.data(),
+             width, height, m_swsCtx, avframe[idx], ndiFrame))
+        continue;
 
-      if(m_settings.format == "UYVY")
-      {
-        sws_scale(m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
-
-        ndiFrame.FourCC = NDIlib_FourCC_video_type_UYVY;
-        ndiFrame.p_data = (uint8_t*)avframe->data[0];
-        ndiFrame.line_stride_in_bytes = avframe->linesize[0];
-      }
-      else if(m_settings.format == "RGBA")
-      {
-        ndiFrame.FourCC = NDIlib_FourCC_video_type_RGBA;
-        ndiFrame.p_data = (uint8_t*)readback.data.data();
-        ndiFrame.line_stride_in_bytes = 4 * width;
-      }
       m_sender.send_video_async(ndiFrame);
     }
     else
