@@ -47,3 +47,20 @@ target_link_libraries(score_addon_ndi
 
 # Target-specific options
 setup_score_plugin(score_addon_ndi)
+
+# --- tests --------------------------------------------------------------------
+# The frame description needs no GPU, no NDI runtime and no score, so it is
+# testable on its own. Gated on SCORE_TESTING, which only the coverage job sets,
+# so packaging builds do not carry it.
+if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.cpp")
+  add_executable(score_addon_ndi_pixel_format_test tests/PixelFormatTest.cpp)
+  target_include_directories(score_addon_ndi_pixel_format_test
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+  target_link_libraries(score_addon_ndi_pixel_format_test PRIVATE avutil swscale)
+  target_compile_features(score_addon_ndi_pixel_format_test PRIVATE cxx_std_20)
+
+  if(COMMAND add_test)
+    add_test(NAME score_addon_ndi_pixel_format
+             COMMAND score_addon_ndi_pixel_format_test)
+  endif()
+endif()
