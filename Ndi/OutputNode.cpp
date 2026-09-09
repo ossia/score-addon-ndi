@@ -109,7 +109,6 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     , m_sender{m_ndi, set.path.toStdString()}
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
-  qDebug()<<"CREATED SENDER111"<<set.path;
 
   AVPixelFormat fmt{AV_PIX_FMT_RGBA};
   if(m_settings.format == "UYVY")
@@ -192,10 +191,7 @@ void OutputNode::senderThreadFunc()
         ndiFrame.p_data = (uint8_t*)readback.data.data();
         ndiFrame.line_stride_in_bytes = 4 * width;
       }
-      QElapsedTimer t;
-      t.restart();
       m_sender.send_video_async(ndiFrame);
-      qDebug()<<"NDI: " << t.nsecsElapsed() / 1e6;
     }
     else
     {
@@ -223,8 +219,6 @@ void OutputNode::render()
   auto renderer = m_renderer.lock();
   if(renderer && m_renderState)
   {
-    QElapsedTimer t;
-    t.restart();
     auto rhi = m_renderState->rhi;
     QRhiCommandBuffer* cb{};
     if(rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
@@ -233,8 +227,6 @@ void OutputNode::render()
     renderer->render(*cb);
 
     rhi->endOffscreenFrame();
-    qDebug()<<"R: " << t.nsecsElapsed() / 1e6;
-    t.restart();
 
     if(renderer->renderers.size() > 1)
     {
@@ -247,8 +239,6 @@ void OutputNode::render()
           m_frameReady = true;
         }
         m_cv.notify_one();
-
-        qDebug()<<"to ndi: " << t.nsecsElapsed() / 1e6;
       }
     }
 
