@@ -38,6 +38,12 @@ struct Loader
   {
     m_lib->send_send_video_async_v2(sender, &frame);
   }
+  /// send_video_async(NULL): one of the SDK's documented synchronising events.
+  /// Returns once the SDK has finished with the buffer it was last handed.
+  auto send_sync_async(NDIlib_send_instance_t sender) const noexcept
+  {
+    m_lib->send_send_video_async_v2(sender, nullptr);
+  }
 
   // Find API
   auto find_create() const noexcept { return m_lib->find_create_v2(nullptr); }
@@ -197,6 +203,10 @@ struct Sender
   {
     ndi.send_send_video_async(impl, frame);
   }
+  /// Wait for the SDK to let go of the last frame handed to send_video_async.
+  /// Must be called before freeing any buffer that was sent, because the
+  /// send_destroy in ~Sender runs after the owning object's own destructor body.
+  void flush_async() { ndi.send_sync_async(impl); }
   int get_no_connections(uint32_t timeout)
   {
     return ndi.send_get_no_connections(impl, timeout);

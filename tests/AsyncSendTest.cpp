@@ -174,11 +174,19 @@ struct RoundResult
   int matched{}, corrupted{}, received{};
 };
 
-RoundResult sendAndFree(bool freeWhileOwned, int rounds)
+/// How the sent buffer is released.
+enum FreeMode
+{
+  kKeepAlive,           ///< control: freed only after send_destroy
+  kFreeUnsynchronised,  ///< the pre-fix ~OutputNode order
+  kFlushThenFree        ///< the fix: Sender::flush_async() before the free
+};
+
+RoundResult sendAndFree(FreeMode mode, int rounds)
 {
   RoundResult res{};
   const std::string name = std::string("score-ndi-async-uaf-")
-                           + (freeWhileOwned ? "freed-" : "kept-")
+                           + (mode == kKeepAlive ? "kept-" : mode == kFreeUnsynchronised ? "freed-" : "flushed-")
                            + std::to_string(::getpid());
   NDIlib_send_create_t cfg{};
   cfg.p_ndi_name = name.c_str();
@@ -225,10 +233,22 @@ RoundResult sendAndFree(bool freeWhileOwned, int rounds)
     f.frame_rate_D = 1000;
     NDIlib_send_send_video_async_v2(sender, &f);
 
-    if(freeWhileOwned)
-      std::free(buf);  // the order ~OutputNode uses
+    if(mode == kFlushThenFree)
+    {
+      // What Ndi::Sender::flush_async() does: send_video_async(NULL) is one of
+      // the SDK's documented synchronising events, so it has let go of this
+      // buffer by the time the call returns and freeing is safe.
+      NDIlib_send_send_video_async_v2(sender, nullptr);
+      std::free(buf);
+    }
+    else if(mode == kFreeUnsynchronised)
+    {
+      std::free(buf);  // the order ~OutputNode used before the fix
+    }
     else
+    {
       kept.push_back(buf);  // released only after send_destroy
+    }
 
     // Whichever branch was taken, the process carries on allocating. In the
     // freed case that is what hands the SDK's still-live pointer to somebody
@@ -282,7 +302,7 @@ void testFreeWhileOwned()
   // Control first: the same sends, the same allocations, nothing freed early.
   // Without it a corrupted frame below could just as well be the SDK's RGBA
   // roundtrip being lossy.
-  const RoundResult kept = sendAndFree(false, rounds);
+  const RoundResult kept = sendAndFree(kKeepAlive, rounds);
   std::printf(
       "  buffers kept alive:        %d received, %d matched what was sent, %d "
       "corrupted\n",
@@ -296,26 +316,44 @@ void testFreeWhileOwned()
       "corrupted frame is not evidence of anything",
       kept.corrupted, kept.received);
 
-  const RoundResult freed = sendAndFree(true, rounds);
+  // The hazard itself, kept as a measurement rather than an assertion: this is
+  // the sequence ~OutputNode used before the fix, and it is what makes the
+  // flush load-bearing. It is EXPECTED to corrupt; if it ever stops, the check
+  // below has gone vacuous and this says so.
+  const RoundResult freed = sendAndFree(kFreeUnsynchronised, rounds);
   std::printf(
-      "  freed after the send:      %d received, %d matched what was sent, %d "
-      "corrupted\n",
+      "  freed with no synchronising call: %d received, %d matched, %d corrupted "
+      "(expected to corrupt -- this is why the flush exists)\n",
       freed.received, freed.matched, freed.corrupted);
   CHECK(
       freed.received > 0, "no frames came back with the buffers freed; inconclusive");
   CHECK(
-      freed.corrupted == 0,
-      "freeing the buffer after send_video_async and before any synchronising call "
-      "put %d of %d frames on the wire corrupted: the SDK read freed memory. This "
-      "is the order ~OutputNode uses -- it frees the staging AVFrames in its body, "
-      "while the send_destroy that would release them is in Ndi::Sender's "
-      "destructor, which runs afterwards",
-      freed.corrupted, freed.received);
+      freed.corrupted > 0,
+      "freeing a buffer the SDK still owns did NOT corrupt anything this run, so "
+      "the flushed case below proves nothing: either the SDK stopped reading "
+      "asynchronously or the harness is no longer measuring what it thinks");
+
+  // The fix: Sender::flush_async() before the free.
+  const RoundResult flushed = sendAndFree(kFlushThenFree, rounds);
+  std::printf(
+      "  flush_async() then freed:         %d received, %d matched, %d corrupted\n",
+      flushed.received, flushed.matched, flushed.corrupted);
+  CHECK(
+      flushed.received > 0,
+      "no frames came back in the flushed case; inconclusive");
+  CHECK(
+      flushed.corrupted == 0,
+      "%d of %d frames were corrupted even though send_video_async(NULL) ran "
+      "before the free, so ~OutputNode's flush_async() does not actually end the "
+      "SDK's claim on the buffer",
+      flushed.corrupted, flushed.received);
 }
 
-/// The exact sequence ~OutputNode runs: async send, free the staging frame, then
-/// send_destroy. Kept as a smoke check that it does not crash outright; the
-/// content check above is what actually shows the hazard.
+/// The sequence ~OutputNode ran BEFORE the fix: async send, free the staging
+/// frame, then send_destroy from ~Sender. Kept as a smoke check that it does not
+/// crash outright -- the content check above is what shows the actual damage.
+/// ~OutputNode now calls Sender::flush_async() before freeing, so this is a
+/// record of the hazard, not a description of current behaviour.
 void testShutdownOrder()
 {
   std::printf("  the order ~OutputNode uses: async send -> free the frame -> "

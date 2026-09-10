@@ -364,6 +364,29 @@ void testRestartAfterRebuild()
   // The rebuild. createRenderer constructs the InvertYRenderer over
   // m_readback[0], so from here the GPU writes buffer 0 whatever the pool says.
   const int reboundTo = 0;
+
+  // startRendering() resets the pool before restarting the sender. That is the
+  // fix: without it the pool carries m_readbackIndex, a stale m_frameReady and
+  // an in-flight index across a rebuild, and the first frame afterwards is sent
+  // from a pre-rebuild buffer while the new frame sits in buffer 0.
+  pool.reset();
+
+  CHECK(
+      pool.m_readbackIndex == reboundTo,
+      "reset() left m_readbackIndex at %d, but the new renderer reads back into %d",
+      pool.m_readbackIndex, reboundTo);
+  CHECK(!pool.m_frameReady.load(), "reset() left a stale frameReady; the sender "
+                                   "thread wakes immediately and sends a pre-rebuild frame");
+  CHECK(pool.m_sendIndex.load() == -1, "reset() left m_sendIndex at %d",
+        pool.m_sendIndex.load());
+  CHECK(pool.m_inFlight.load() == -1, "reset() left m_inFlight at %d",
+        pool.m_inFlight.load());
+  for(int i = 0; i < 4; i++)
+    CHECK(
+        pool.m_bufState[i].load() == Ndi::Buf::Free,
+        "reset() left buffer %d in state %d; the renderer will step over it forever",
+        i, (int)pool.m_bufState[i].load());
+
   pool.m_running = true;
 
   // The first render() after the rebuild: the readback lands in `reboundTo`, and
@@ -380,9 +403,9 @@ void testRestartAfterRebuild()
       "is sent from buffer %d while the new frame is in buffer %d",
       beforeStop, queued, reboundTo);
 
-  // And whatever the sender was left mid-way through is still there.
+  // Nothing should be left over now.
   std::printf(
-      "  leftover across the stop: frameReady=%d sendIndex=%d inFlight=%d, states "
+      "  state after reset + one frame: frameReady=%d sendIndex=%d inFlight=%d, states "
       "%d%d%d%d\n",
       (int)pool.m_frameReady.load(), pool.m_sendIndex.load(), pool.m_inFlight.load(),
       (int)pool.m_bufState[0].load(), (int)pool.m_bufState[1].load(),
@@ -590,7 +613,15 @@ bool runShutdown(bool park)
     std::this_thread::sleep_for(milliseconds(20));
   }
 
-  pool.requestStop();
+  // requestStop() must store m_running under m_mutex, and the parked waiter is
+  // holding exactly that mutex -- so the stopper has to run on its own thread or
+  // this test deadlocks itself. That is the point: a correct requestStop() waits
+  // for the waiter to reach pthread_cond_wait (which releases the mutex and
+  // registers atomically), so the notify can never be lost. A requestStop() that
+  // stores the flag outside the lock does NOT wait, fires its notify while the
+  // waiter is still parked with the mutex, and the notify is dropped.
+  std::thread stopper([&] { pool.requestStop(); });
+  std::this_thread::sleep_for(milliseconds(20));  // let it reach the lock
   g_holdInWindow.store(false, std::memory_order_release);
 
   const auto deadline = steady_clock::now() + milliseconds(500);
@@ -608,6 +639,7 @@ bool runShutdown(bool park)
       std::this_thread::sleep_for(milliseconds(1));
     }
   }
+  stopper.join();
   waiter.join();
   return ok;
 }
