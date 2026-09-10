@@ -18,6 +18,15 @@
 // Prints numbers; asserts only the things that are actually invariants.
 #include <Ndi/VideoFrameFormat.hpp>
 
+// The addon no longer converts on the CPU -- score::gfx::UYVYEncoder does it on
+// the GPU. swscale is pulled in HERE, and only here, to keep measuring what that
+// change removed from the sender thread.
+extern "C" {
+#include <libavutil/frame.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+}
+
 #include <QByteArray>
 #include <QString>
 
@@ -157,7 +166,11 @@ void benchConversion()
     NDIlib_video_frame_v2_t f{};
     const double sws_ms = msPerCall(
         [&] {
-          Ndi::describeVideoFrame("UYVY", rgba.data(), s.w, s.h, sws, staging, f);
+          // Directly, because describeVideoFrame no longer converts at all --
+          // this is the cost the GPU encoder took off the sender thread.
+          const uint8_t* src[1] = {rgba.data()};
+          const int srcStride[1] = {4 * s.w};
+          sws_scale(sws, src, srcStride, 0, s.h, staging->data, staging->linesize);
         },
         iters);
     const double memcpy_ms = msPerCall(
@@ -192,7 +205,7 @@ void benchRgbaPath()
   std::vector<uint8_t> rgba(size_t(1920) * 1080 * 4, 0x60);
   NDIlib_video_frame_v2_t f{};
   const double ms = msPerCall(
-      [&] { Ndi::describeVideoFrame("RGBA", rgba.data(), 1920, 1080, nullptr, nullptr, f); },
+      [&] { Ndi::describeVideoFrame("RGBA", rgba.data(), 1920, 1080, 4 * 1920, f); },
       20000);
   std::printf(
       "  describeVideoFrame RGBA at 1080p: %.6f ms/frame (it only fills in five "
@@ -201,7 +214,7 @@ void benchRgbaPath()
 
   const Counted c = counting([&] {
     for(int i = 0; i < 1000; i++)
-      Ndi::describeVideoFrame("RGBA", rgba.data(), 1920, 1080, nullptr, nullptr, f);
+      Ndi::describeVideoFrame("RGBA", rgba.data(), 1920, 1080, 4 * 1920, f);
   });
   std::printf("  describeVideoFrame RGBA: %zu allocations over 1000 frames\n", c.allocs);
   CHECK(c.allocs == 0, "the zero-copy RGBA path allocated %zu times in 1000 frames",
@@ -253,13 +266,14 @@ void benchFormatString()
   // buffer. The cost is the transient malloc/free pair, which only the timing
   // shows.
   std::printf(
-      "    -> nothing retained, but %.0f ns/frame more than the plain string: "
-      "toStdString() goes through toUtf8(), which mallocs and frees a QByteArray "
-      "once per frame\n"
-      "       on the sender thread to compare a four-character format that never "
-      "changes. describeVideoFrame takes a string_view, so nothing needs the "
-      "std::string. At %.4f%% of a 60fps frame it is not where the time goes.\n",
-      (ms - msPlain) * 1e6, 100.0 * (ms - msPlain) / (1000.0 / 60.0));
+      "    -> nothing retained, and %.0f ns/frame more than the plain string. "
+      "OutputNode no longer pays this\n"
+      "       per frame: the format is converted once at setup into m_formatStr. "
+      "Kept as the reference for why --\n"
+      "       toStdString() goes through toUtf8(), which mallocs and frees a "
+      "QByteArray, and the sender thread\n"
+      "       is a realtime path.\n",
+      (ms - msPlain) * 1e6);
 }
 
 // -------------------------------------------------------------------------

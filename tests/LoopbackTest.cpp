@@ -53,8 +53,8 @@ Rgb pixelAt(const NDIlib_video_frame_v2_t& f, int x, int y)
 
 /// Sends `format` until the receiver hands a video frame back, or we give up.
 bool roundtrip(
-    const char* format, const std::vector<uint8_t>& rgba, SwsContext* sws,
-    AVFrame* staging, NDIlib_send_instance_t sender, NDIlib_recv_instance_t recv,
+    const char* format, const std::vector<uint8_t>& wire, int strideBytes,
+    NDIlib_send_instance_t sender, NDIlib_recv_instance_t recv,
     NDIlib_video_frame_v2_t& received)
 {
   using namespace std::chrono;
@@ -62,7 +62,7 @@ bool roundtrip(
   while(steady_clock::now() < deadline)
   {
     NDIlib_video_frame_v2_t out{};
-    if(!Ndi::describeVideoFrame(format, rgba.data(), kWidth, kHeight, sws, staging, out))
+    if(!Ndi::describeVideoFrame(format, wire.data(), kWidth, kHeight, strideBytes, out))
       return false;
     out.frame_rate_N = 60000;
     out.frame_rate_D = 1000;
@@ -98,23 +98,18 @@ int main()
     rgba[i + 3] = 255;
   }
 
-  SwsContext* sws = sws_getContext(
-      kWidth, kHeight, AV_PIX_FMT_RGBA, kWidth, kHeight, AV_PIX_FMT_UYVY422, 0,
-      nullptr, nullptr, nullptr);
-  // describeVideoFrame writes into the staging frame for every format, so each
-  // one needs a frame laid out for it -- handing the RGBA path a UYVY422 frame
-  // would write 4 bytes per pixel into a 2-byte-per-pixel stride.
-  AVFrame* staging = av_frame_alloc();
-  staging->format = AV_PIX_FMT_UYVY422;
-  staging->width = kWidth;
-  staging->height = kHeight;
-  av_frame_get_buffer(staging, 0);
-
-  AVFrame* rgbaStaging = av_frame_alloc();
-  rgbaStaging->format = AV_PIX_FMT_RGBA;
-  rgbaStaging->width = kWidth;
-  rgbaStaging->height = kHeight;
-  av_frame_get_buffer(rgbaStaging, 0);
+  // The GPU produces the wire bytes in production (UYVYEncoder for UYVY), so
+  // this packs them the same way rather than converting on the CPU: there is no
+  // swscale in this addon any more. BT.601 limited range puts opaque red at
+  // Y=81, U=90, V=240, which is what the pixel-format test pins independently.
+  std::vector<uint8_t> uyvy(size_t(kWidth) * kHeight * 2);
+  for(size_t i = 0; i < uyvy.size(); i += 4)
+  {
+    uyvy[i + 0] = 90;   // U
+    uyvy[i + 1] = 81;   // Y0
+    uyvy[i + 2] = 240;  // V
+    uyvy[i + 3] = 81;   // Y1
+  }
 
   const std::string name = "score-ndi-loopback-" + std::to_string(::getpid());
   NDIlib_send_create_t sendCfg{};
@@ -163,8 +158,10 @@ int main()
   for(const Case c : {Case{"RGBA", 16}, Case{"UYVY", 48}})
   {
     NDIlib_video_frame_v2_t got{};
-    AVFrame* stage = (std::string_view{c.format} == "RGBA") ? rgbaStaging : staging;
-    if(!roundtrip(c.format, rgba, sws, stage, sender, recv, got))
+    const bool isRgba = (std::string_view{c.format} == "RGBA");
+    const auto& wire = isRgba ? rgba : uyvy;
+    const int stride = isRgba ? 4 * kWidth : 2 * kWidth;
+    if(!roundtrip(c.format, wire, stride, sender, recv, got))
     {
       std::printf("  skip %s: no frame came back within 10 s\n", c.format);
       continue;
@@ -195,9 +192,6 @@ int main()
 
   NDIlib_recv_destroy(recv);
   NDIlib_send_destroy(sender);
-  av_frame_free(&staging);
-  av_frame_free(&rgbaStaging);
-  sws_freeContext(sws);
   NDIlib_destroy();
 
   std::printf(

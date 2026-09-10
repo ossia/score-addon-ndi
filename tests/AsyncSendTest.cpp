@@ -4,15 +4,15 @@
 // call, which copies before it returns. Production sends with
 // NDIlib_send_send_video_async_v2, whose contract is the opposite: the buffer
 // must stay valid and unmodified until the next send or until send_destroy. The
-// four-buffer pool, the four staging AVFrames and the zero-copy RGBA path all
+// four-buffer pool and the zero-copy send path both
 // exist only because of that contract, and nothing tested it.
 //
 // Two things here:
 //
 //  1. that the SDK really does read the buffer after the async send returns, so
 //     the ownership states are load-bearing rather than defensive;
-//  2. the shutdown order. ~OutputNode frees m_swsCtx and the four staging
-//     AVFrames in its own body, which runs before its members are destroyed --
+//  2. the shutdown order. ~OutputNode releases its buffers in its own body,
+//     which runs before its members are destroyed --
 //     and Ndi::Sender, whose destructor makes the send_destroy that ends the
 //     SDK's claim on the last frame, is a member. Built with
 //     -fsanitize=address, the last group reads freed memory if the SDK touches
@@ -93,8 +93,7 @@ void testAsyncOwnershipIsObservable(
     fill(buf.data(), 255, 0, 0);  // red
     NDIlib_video_frame_v2_t f{};
     CHECK(
-        Ndi::describeVideoFrame(
-            "RGBA", buf.data(), kWidth, kHeight, nullptr, nullptr, f),
+        Ndi::describeVideoFrame("RGBA", buf.data(), kWidth, kHeight, 4 * kWidth, f),
         "RGBA was refused");
     f.frame_rate_N = 60000;
     f.frame_rate_D = 1000;
@@ -106,7 +105,7 @@ void testAsyncOwnershipIsObservable(
     // Hand over a different buffer, which releases buf.
     fill(other.data(), 0, 0, 255);
     NDIlib_video_frame_v2_t g{};
-    Ndi::describeVideoFrame("RGBA", other.data(), kWidth, kHeight, nullptr, nullptr, g);
+    Ndi::describeVideoFrame("RGBA", other.data(), kWidth, kHeight, 4 * kWidth, g);
     g.frame_rate_N = 60000;
     g.frame_rate_D = 1000;
     NDIlib_send_send_video_async_v2(sender, &g);
@@ -152,7 +151,7 @@ void testAsyncOwnershipIsObservable(
 // -------------------------------------------------------------------------
 // 2. Freeing a buffer the SDK still owns.
 //
-// ~OutputNode's body frees m_swsCtx and the four staging AVFrames. Its body runs
+// ~OutputNode's body releases the buffers it owns. Its body runs
 // before its members are destroyed, and Ndi::Sender -- whose destructor makes
 // the send_destroy that ends the SDK's claim on the last frame it was handed --
 // is a member. So the frame the SDK is still reading is freed first and the
@@ -228,7 +227,7 @@ RoundResult sendAndFree(FreeMode mode, int rounds)
       buf[i + 3] = 255;
     }
     NDIlib_video_frame_v2_t f{};
-    Ndi::describeVideoFrame("RGBA", buf, kBigW, kBigH, nullptr, nullptr, f);
+    Ndi::describeVideoFrame("RGBA", buf, kBigW, kBigH, 4 * kBigW, f);
     f.frame_rate_N = 60000;
     f.frame_rate_D = 1000;
     NDIlib_send_send_video_async_v2(sender, &f);
@@ -370,29 +369,21 @@ void testShutdownOrder()
   if(!sender)
     return;
 
-  AVFrame* staging = av_frame_alloc();
-  staging->format = AV_PIX_FMT_UYVY422;
-  staging->width = kWidth;
-  staging->height = kHeight;
-  CHECK(av_frame_get_buffer(staging, 0) == 0, "av_frame_get_buffer failed");
-
-  std::vector<uint8_t> rgba(kBytes);
-  fill(rgba.data(), 255, 0, 0);
-  SwsContext* sws = sws_getContext(
-      kWidth, kHeight, AV_PIX_FMT_RGBA, kWidth, kHeight, AV_PIX_FMT_UYVY422, 0, nullptr,
-      nullptr, nullptr);
+  // The readback buffer is what gets sent; there is no staging frame any more,
+  // because the GPU produces the wire bytes directly.
+  auto* readback = (uint8_t*)std::malloc(kBytes);
+  fill(readback, 255, 0, 0);
 
   NDIlib_video_frame_v2_t f{};
   CHECK(
-      Ndi::describeVideoFrame("UYVY", rgba.data(), kWidth, kHeight, sws, staging, f),
-      "UYVY was refused");
+      Ndi::describeVideoFrame("RGBA", readback, kWidth, kHeight, 4 * kWidth, f),
+      "RGBA was refused");
   f.frame_rate_N = 60000;
   f.frame_rate_D = 1000;
   NDIlib_send_send_video_async_v2(sender, &f);
 
-  // ~OutputNode's body: no synchronising call has happened.
-  sws_freeContext(sws);
-  av_frame_free(&staging);
+  // ~OutputNode's body, before the fix: no synchronising call has happened.
+  std::free(readback);
 
   // Only now do the members go: Ndi::Sender::~Sender -> send_destroy.
   NDIlib_send_destroy(sender);
@@ -411,26 +402,17 @@ void testShutdownOrderCorrected()
   if(!sender)
     return;
 
-  AVFrame* staging = av_frame_alloc();
-  staging->format = AV_PIX_FMT_UYVY422;
-  staging->width = kWidth;
-  staging->height = kHeight;
-  av_frame_get_buffer(staging, 0);
-  std::vector<uint8_t> rgba(kBytes);
-  fill(rgba.data(), 255, 0, 0);
-  SwsContext* sws = sws_getContext(
-      kWidth, kHeight, AV_PIX_FMT_RGBA, kWidth, kHeight, AV_PIX_FMT_UYVY422, 0, nullptr,
-      nullptr, nullptr);
+  auto* readback = (uint8_t*)std::malloc(kBytes);
+  fill(readback, 255, 0, 0);
 
   NDIlib_video_frame_v2_t f{};
-  Ndi::describeVideoFrame("UYVY", rgba.data(), kWidth, kHeight, sws, staging, f);
+  Ndi::describeVideoFrame("RGBA", readback, kWidth, kHeight, 4 * kWidth, f);
   f.frame_rate_N = 60000;
   f.frame_rate_D = 1000;
   NDIlib_send_send_video_async_v2(sender, &f);
 
   NDIlib_send_destroy(sender);  // the synchronising call comes first
-  sws_freeContext(sws);
-  av_frame_free(&staging);
+  std::free(readback);
   std::printf("  control: send_destroy before the free is clean\n");
 }
 }
