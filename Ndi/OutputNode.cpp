@@ -1,5 +1,6 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Ndi/ReadbackPool.hpp>
+#include <Ndi/UyvyEncodeRenderer.hpp>
 #include <Ndi/VideoFrameFormat.hpp>
 
 #include <Gfx/GfxExecContext.hpp>
@@ -7,7 +8,6 @@
 #include <Gfx/Graph/RenderList.hpp>
 #include <Gfx/Graph/RenderState.hpp>
 #include <Gfx/SharedOutputSettings.hpp>
-#include <Video/Rescale.hpp>
 
 #include <score/gfx/OpenGL.hpp>
 
@@ -16,6 +16,7 @@
 #include <QOffscreenSurface>
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <cstdint>
 #include <condition_variable>
@@ -30,8 +31,6 @@
 extern "C" {
 #include <libavformat/avformat.h>
 #include <libavutil/pixdesc.h>
-#include <libswscale/swscale.h>
-struct SwsContext;
 }
 
 #include <wobjectimpl.h>
@@ -51,7 +50,11 @@ struct OutputNode : score::gfx::OutputNode
   QRhiTextureRenderTarget* m_renderTarget{};
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
+  // One of these is created in createRenderer, according to the format; the
+  // callback below points whichever it is at the next pool buffer.
   Gfx::InvertYRenderer* m_inv_y_renderer{};
+  Ndi::UyvyEncodeRenderer* m_uyvy_renderer{};
+  std::function<void(QRhiReadbackResult&)> m_updateReadback;
   // Readback pool. A frame handed to send_video_async stays owned by the SDK
   // until the next send, so the renderer must never target a buffer that is
   // still spoken for; the states in Ndi::ReadbackPool are what enforce that,
@@ -65,13 +68,6 @@ struct OutputNode : score::gfx::OutputNode
   Ndi::ReadbackPool<kBuffers> m_pool;
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
-  SwsContext* m_swsCtx{};
-  // One staging frame per readback buffer. send_video_async keeps reading the
-  // buffer it was handed until the NEXT send_video_async, so a single frame
-  // cannot be reused: the sws_scale for frame N+1 would overwrite what the SDK
-  // is still reading from frame N. Rotating in step with m_readback gives the
-  // same two frames of slack that make the RGBA path safe.
-  AVFrame* avframe[kBuffers]{};
   bool m_hasSender{};
 
   // Async sender thread members
@@ -138,29 +134,6 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
   // Only a format that needs a colour conversion needs somewhere to convert
   // into. RGBA is already the wire layout and is sent straight from the readback
   // buffer, so it allocates nothing here.
-  if(fmt != AV_PIX_FMT_RGBA)
-  {
-    m_swsCtx = sws_getContext(
-        m_settings.width, m_settings.height, AV_PIX_FMT_RGBA, m_settings.width,
-        m_settings.height, AV_PIX_FMT_UYVY422, 0, 0, 0, 0);
-
-    // One per readback buffer: the SDK reads the frame it was handed until the
-    // next send, so the conversion for the next frame cannot reuse it.
-    for(auto& f : avframe)
-    {
-      f = av_frame_alloc();
-      f->format = fmt;
-      f->width = m_settings.width;
-      f->height = m_settings.height;
-      if(av_frame_get_buffer(f, 0) != 0)
-      {
-        // Unbacked staging frames would make every conversion describe a null
-        // pointer under a valid FourCC. Drop them; describeVideoFrame then
-        // refuses the format rather than sending nothing.
-        av_frame_free(&f);
-      }
-    }
-  }
 }
 
 OutputNode::~OutputNode()
@@ -181,11 +154,6 @@ OutputNode::~OutputNode()
   // instrumented. Synchronise explicitly first.
   m_sender.flush_async();
 
-  if(m_swsCtx)
-    sws_freeContext(m_swsCtx);
-
-  for(auto& f : avframe)
-    av_frame_free(&f);
 }
 
 void OutputNode::senderThreadFunc()
@@ -198,19 +166,27 @@ void OutputNode::senderThreadFunc()
 
     // Read directly from the readback buffer
     auto& readback = m_readback[idx];
-    auto width = readback.pixelSize.width();
-    auto height = readback.pixelSize.height();
+    const int height = readback.pixelSize.height();
+
+    // The readback's own width is NOT always the picture width. UYVYEncoder
+    // writes an RGBA8 target at half width, each texel carrying two pixels as
+    // (U, Y0, V, Y1), so the picture is twice as wide as the texture that came
+    // back. RGBA is one texel per pixel and needs no such correction.
+    const bool uyvy = (m_formatStr == "UYVY");
+    const int width = uyvy ? readback.pixelSize.width() * 2 : readback.pixelSize.width();
 
     NDIlib_video_frame_v2_t ndiFrame{};
-    ndiFrame.xres = width;
-    ndiFrame.yres = height;
     ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
     ndiFrame.frame_rate_D = 10000;
-    ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
 
+    // The GPU produced these bytes in the wire format already -- RGBA straight
+    // from the scene, UYVY through UYVYEncoder -- so there is nothing to convert
+    // and nothing to copy. The stride comes from the readback because the
+    // backend may pad rows.
+    const int stride = Ndi::readbackStride(readback.data.size(), height);
     if(!Ndi::describeVideoFrame(
-           m_formatStr, (const uint8_t*)readback.data.data(),
-           width, height, m_swsCtx, avframe[idx], ndiFrame))
+           m_formatStr, (const uint8_t*)readback.data.data(), width, height,
+           stride, ndiFrame))
     {
       m_pool.releaseUnsent(idx);
       continue;
@@ -263,7 +239,8 @@ void OutputNode::render()
       }
     }
 
-    m_inv_y_renderer->updateReadback(m_readback[m_pool.advanceToFreeBuffer()]);
+    if(m_updateReadback)
+      m_updateReadback(m_readback[m_pool.advanceToFreeBuffer()]);
   }
 }
 
@@ -347,8 +324,28 @@ OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
       .texture = m_texture,
       .renderPass = m_renderState->renderPassDescriptor,
       .renderTarget = m_renderTarget};
-  return const_cast<Gfx::InvertYRenderer*&>(m_inv_y_renderer) = new Gfx::InvertYRenderer{
-             *this, rt, const_cast<QRhiReadbackResult&>(m_readback[0])};
+  auto& readback0 = const_cast<QRhiReadbackResult&>(m_readback[0]);
+  auto* self = const_cast<OutputNode*>(this);
+
+  // A rebuild lands here with a fresh renderer bound to buffer 0, which is what
+  // ReadbackPool::reset() in startRendering() lines the pool back up with.
+  if(m_formatStr == "UYVY")
+  {
+    // Convert on the GPU. The encoder folds the Y-flip into the same shader, so
+    // there is no InvertYRenderer in this path at all -- and no sws_scale on the
+    // sender thread, which at 2160p cost 21.5 ms against a 16.67 ms budget.
+    auto* enc = new Ndi::UyvyEncodeRenderer{*this, rt, readback0};
+    self->m_uyvy_renderer = enc;
+    self->m_inv_y_renderer = nullptr;
+    self->m_updateReadback = [enc](QRhiReadbackResult& rb) { enc->updateReadback(rb); };
+    return enc;
+  }
+
+  auto* inv = new Gfx::InvertYRenderer{*this, rt, readback0};
+  self->m_inv_y_renderer = inv;
+  self->m_uyvy_renderer = nullptr;
+  self->m_updateReadback = [inv](QRhiReadbackResult& rb) { inv->updateReadback(rb); };
+  return inv;
 }
 
 OutputDevice::OutputDevice(

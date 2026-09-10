@@ -57,7 +57,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   add_executable(score_addon_ndi_pixel_format_test tests/PixelFormatTest.cpp)
   target_include_directories(score_addon_ndi_pixel_format_test
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
-  target_link_libraries(score_addon_ndi_pixel_format_test PRIVATE avutil swscale)
+  target_link_libraries(score_addon_ndi_pixel_format_test PRIVATE)
   target_compile_features(score_addon_ndi_pixel_format_test PRIVATE cxx_std_20)
 
   if(COMMAND add_test)
@@ -92,7 +92,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   add_executable(score_addon_ndi_frame_description_test tests/FrameDescriptionTest.cpp)
   target_include_directories(score_addon_ndi_frame_description_test
     PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
-  target_link_libraries(score_addon_ndi_frame_description_test PRIVATE avutil swscale)
+  target_link_libraries(score_addon_ndi_frame_description_test PRIVATE)
   target_compile_features(score_addon_ndi_frame_description_test PRIVATE cxx_std_20)
 
   if(COMMAND add_test)
@@ -139,7 +139,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     target_include_directories(score_addon_ndi_loopback_test
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
     target_link_libraries(score_addon_ndi_loopback_test
-      PRIVATE avutil swscale "${NDI_RUNTIME_LIBRARY}")
+      PRIVATE "${NDI_RUNTIME_LIBRARY}")
     target_compile_features(score_addon_ndi_loopback_test PRIVATE cxx_std_20)
 
     # The loopback test sends synchronously; production sends asynchronously,
@@ -148,7 +148,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     target_include_directories(score_addon_ndi_async_send_test
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
     target_link_libraries(score_addon_ndi_async_send_test
-      PRIVATE avutil swscale "${NDI_RUNTIME_LIBRARY}")
+      PRIVATE "${NDI_RUNTIME_LIBRARY}")
     target_compile_features(score_addon_ndi_async_send_test PRIVATE cxx_std_20)
 
     if(COMMAND add_test)
