@@ -239,8 +239,13 @@ void OutputNode::render()
       }
     }
 
-    if(m_updateReadback)
-      m_updateReadback(m_readback[m_pool.advanceToFreeBuffer()]);
+    {
+      auto& rb = m_readback[m_pool.advanceToFreeBuffer()];
+      if(m_uyvy_renderer)
+        m_uyvy_renderer->updateReadback(rb);
+      else if(m_inv_y_renderer)
+        m_inv_y_renderer->updateReadback(rb);
+    }
   }
 }
 
@@ -337,14 +342,12 @@ OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
     auto* enc = new Ndi::UyvyEncodeRenderer{*this, rt, readback0};
     self->m_uyvy_renderer = enc;
     self->m_inv_y_renderer = nullptr;
-    self->m_updateReadback = [enc](QRhiReadbackResult& rb) { enc->updateReadback(rb); };
-    return enc;
+      return enc;
   }
 
   auto* inv = new Gfx::InvertYRenderer{*this, rt, readback0};
   self->m_inv_y_renderer = inv;
   self->m_uyvy_renderer = nullptr;
-  self->m_updateReadback = [inv](QRhiReadbackResult& rb) { inv->updateReadback(rb); };
   return inv;
 }
 
