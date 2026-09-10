@@ -116,6 +116,25 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     set_tests_properties(score_addon_ndi_send_path_bench PROPERTIES TIMEOUT 300)
   endif()
 
+  # GPU check for the UYVY path: runs UyvyEncodeRenderer's exact sequence against
+  # a real QRhi. Needs a GL-capable display, so it is labelled "gui" like score's
+  # other display-dependent tests and exits 77 when there is no QRhi.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/EncodeRendererTest.cpp")
+    add_executable(score_addon_ndi_encode_renderer_test tests/EncodeRendererTest.cpp)
+    target_include_directories(score_addon_ndi_encode_renderer_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_encode_renderer_test
+      PRIVATE score_plugin_gfx score_plugin_media ${QT_PREFIX}::Gui)
+    target_compile_features(score_addon_ndi_encode_renderer_test PRIVATE cxx_std_20)
+
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_encode_renderer
+               COMMAND score_addon_ndi_encode_renderer_test)
+      set_tests_properties(score_addon_ndi_encode_renderer PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui")
+    endif()
+  endif()
+
   # The loopback test sends through the real SDK and reads the frame back, so it
   # needs the NDI runtime at link time rather than the dlopen the addon itself
   # uses. The runtime is not redistributable and is absent from the CI images, so
