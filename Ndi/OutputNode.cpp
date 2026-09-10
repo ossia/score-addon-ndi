@@ -1,4 +1,5 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
+#include <Ndi/ReadbackPool.hpp>
 #include <Ndi/VideoFrameFormat.hpp>
 
 #include <Gfx/GfxExecContext.hpp>
@@ -51,27 +52,15 @@ struct OutputNode : score::gfx::OutputNode
   Gfx::InvertYRenderer* m_inv_y_renderer{};
   // Readback pool. A frame handed to send_video_async stays owned by the SDK
   // until the next send, so the renderer must never target a buffer that is
-  // still spoken for; the states below are what enforce that, and they are what
-  // let the RGBA path send the readback itself with no copy at all.
-  //
-  //   Free     - the renderer may read back into it
-  //   Queued   - readback done, waiting for the sender
-  //   Sending  - the sender is converting/submitting from it
-  //   InFlight - handed to the SDK, still being read
+  // still spoken for; the states in Ndi::ReadbackPool are what enforce that,
+  // and they are what let the RGBA path send the readback itself with no copy
+  // at all.
   //
   // Four buffers: at most one Queued, one Sending and one InFlight, so a Free
   // one always exists.
-  enum class Buf : std::uint8_t
-  {
-    Free,
-    Queued,
-    Sending,
-    InFlight
-  };
   static constexpr int kBuffers = 4;
   QRhiReadbackResult m_readback[kBuffers];
-  std::atomic<Buf> m_bufState[kBuffers]{};
-  int m_readbackIndex{0};  // Next buffer for readback
+  Ndi::ReadbackPool<kBuffers> m_pool;
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
   SwsContext* m_swsCtx{};
@@ -85,12 +74,6 @@ struct OutputNode : score::gfx::OutputNode
 
   // Async sender thread members
   std::thread m_senderThread;
-  std::mutex m_mutex;
-  std::condition_variable m_cv;
-  std::atomic<bool> m_running{false};
-  std::atomic<bool> m_frameReady{false};
-  std::atomic<int> m_sendIndex{-1};  // Buffer ready for sender
-  std::atomic<int> m_inFlight{-1};   // Buffer the SDK is still reading
 
   void senderThreadFunc();
 
@@ -169,10 +152,9 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
 OutputNode::~OutputNode()
 {
   // Ensure sender thread is stopped
-  if(m_running)
+  if(m_pool.m_running)
   {
-    m_running = false;
-    m_cv.notify_one();
+    m_pool.requestStop();
     if(m_senderThread.joinable())
       m_senderThread.join();
   }
@@ -186,55 +168,37 @@ OutputNode::~OutputNode()
 
 void OutputNode::senderThreadFunc()
 {
-  while(m_running)
+  while(m_pool.m_running)
   {
-    std::unique_lock lock(m_mutex);
-    m_cv.wait(lock, [this] { return m_frameReady.load() || !m_running.load(); });
+    const int idx = m_pool.acquireForSending();
+    if(idx < 0)
+      continue;
 
-    if(!m_running)
-      break;
+    // Read directly from the readback buffer
+    auto& readback = m_readback[idx];
+    auto width = readback.pixelSize.width();
+    auto height = readback.pixelSize.height();
 
-    int idx = m_sendIndex.load();
-    if(idx >= 0)
+    NDIlib_video_frame_v2_t ndiFrame{};
+    ndiFrame.xres = width;
+    ndiFrame.yres = height;
+    ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
+    ndiFrame.frame_rate_D = 10000;
+    ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
+
+    if(!Ndi::describeVideoFrame(
+           m_settings.format.toStdString(), (const uint8_t*)readback.data.data(),
+           width, height, m_swsCtx, avframe[idx], ndiFrame))
     {
-      m_frameReady = false;
-      m_sendIndex = -1;
-      m_bufState[idx].store(Buf::Sending, std::memory_order_release);
-      lock.unlock();
-
-      // Read directly from the readback buffer
-      auto& readback = m_readback[idx];
-      auto width = readback.pixelSize.width();
-      auto height = readback.pixelSize.height();
-
-      NDIlib_video_frame_v2_t ndiFrame{};
-      ndiFrame.xres = width;
-      ndiFrame.yres = height;
-      ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
-      ndiFrame.frame_rate_D = 10000;
-      ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
-
-      if(!Ndi::describeVideoFrame(
-             m_settings.format.toStdString(), (const uint8_t*)readback.data.data(),
-             width, height, m_swsCtx, avframe[idx], ndiFrame))
-      {
-        m_bufState[idx].store(Buf::Free, std::memory_order_release);
-        continue;
-      }
-
-      // This call is the synchronising event for the previous frame: the SDK
-      // has finished with that buffer and starts reading this one.
-      m_sender.send_video_async(ndiFrame);
-
-      const int prev = m_inFlight.exchange(idx, std::memory_order_acq_rel);
-      m_bufState[idx].store(Buf::InFlight, std::memory_order_release);
-      if(prev >= 0)
-        m_bufState[prev].store(Buf::Free, std::memory_order_release);
+      m_pool.releaseUnsent(idx);
+      continue;
     }
-    else
-    {
-      m_frameReady = false;
-    }
+
+    // This call is the synchronising event for the previous frame: the SDK
+    // has finished with that buffer and starts reading this one.
+    m_sender.send_video_async(ndiFrame);
+
+    m_pool.markSent(idx);
   }
 }
 
@@ -245,7 +209,7 @@ bool OutputNode::canRender() const
 
 void OutputNode::startRendering()
 {
-  m_running = true;
+  m_pool.m_running = true;
   m_senderThread = std::thread(&OutputNode::senderThreadFunc, this);
 }
 
@@ -270,36 +234,11 @@ void OutputNode::render()
     {
       if(m_sender.get_no_connections(0) > 0)
       {
-        // Signal sender thread with current readback buffer
-        {
-          std::lock_guard lock(m_mutex);
-          // A frame the sender never got to is dropped, not queued behind this
-          // one: for a live output the newest frame is the only one worth
-          // sending. Give its buffer back.
-          const int stale = m_sendIndex.load(std::memory_order_relaxed);
-          if(stale >= 0 && m_bufState[stale].load(std::memory_order_relaxed) == Buf::Queued)
-            m_bufState[stale].store(Buf::Free, std::memory_order_release);
-
-          m_bufState[m_readbackIndex].store(Buf::Queued, std::memory_order_release);
-          m_sendIndex = m_readbackIndex;
-          m_frameReady = true;
-        }
-        m_cv.notify_one();
+        m_pool.queueForSend();
       }
     }
 
-    // Advance to the next Free buffer, stepping over any the sender or the SDK
-    // still owns. kBuffers guarantees this finds one.
-    for(int i = 1; i <= kBuffers; i++)
-    {
-      const int cand = (m_readbackIndex + i) % kBuffers;
-      if(m_bufState[cand].load(std::memory_order_acquire) == Buf::Free)
-      {
-        m_readbackIndex = cand;
-        break;
-      }
-    }
-    m_inv_y_renderer->updateReadback(m_readback[m_readbackIndex]);
+    m_inv_y_renderer->updateReadback(m_readback[m_pool.advanceToFreeBuffer()]);
   }
 }
 
@@ -311,8 +250,7 @@ void OutputNode::onRendererChange() { }
 
 void OutputNode::stopRendering()
 {
-  m_running = false;
-  m_cv.notify_one();
+  m_pool.requestStop();
   if(m_senderThread.joinable())
     m_senderThread.join();
 }
