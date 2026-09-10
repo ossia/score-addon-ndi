@@ -135,10 +135,39 @@ struct ReadbackPool
       m_bufState[prev].store(Buf::Free, std::memory_order_release);
   }
 
+  /// Put every buffer back to Free and forget any in-flight frame.
+  ///
+  /// A render-list rebuild destroys the renderer and builds a new one, which
+  /// reads back into buffer 0 again -- but the pool outlives it. Without this,
+  /// the first render() after a rebuild reads into buffer 0 while the leftover
+  /// m_readbackIndex queues some other buffer holding a pre-rebuild frame, and
+  /// the freshly started sender wakes on a stale m_frameReady and sends it.
+  /// Call before starting the sender thread.
+  void reset()
+  {
+    std::lock_guard lock(m_mutex);
+    for(auto& st : m_bufState)
+      st.store(Buf::Free, std::memory_order_release);
+    m_readbackIndex = 0;
+    m_sendIndex = -1;
+    m_inFlight = -1;
+    m_frameReady = false;
+  }
+
   void requestStop()
   {
-    m_running = false;
-    m_cv.notify_one();
+    // The flag MUST be stored under the same mutex the waiter holds while it
+    // evaluates the predicate. Storing it outside leaves a window between the
+    // sender deciding the predicate is false and registering inside
+    // pthread_cond_wait: a notify that lands there has no waiter, is dropped,
+    // and the sender then sleeps forever on an already-true predicate while
+    // join() blocks behind it. stopRendering() runs on every render-list
+    // rebuild, so this is a live-edit hang, not just a shutdown one.
+    {
+      std::lock_guard lock(m_mutex);
+      m_running = false;
+    }
+    m_cv.notify_all();
   }
 };
 }

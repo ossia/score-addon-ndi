@@ -16,6 +16,7 @@
 #include <QOffscreenSurface>
 
 #include <atomic>
+#include <string>
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
@@ -44,6 +45,7 @@ struct OutputNode : score::gfx::OutputNode
   virtual ~OutputNode();
 
   Ndi::OutputSettings m_settings;
+  std::string m_formatStr;  // m_settings.format, converted once, not per frame
   std::weak_ptr<score::gfx::RenderList> m_renderer{};
   QRhiTexture* m_texture{};
   QRhiTextureRenderTarget* m_renderTarget{};
@@ -124,6 +126,12 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
 
   AVPixelFormat fmt{AV_PIX_FMT_RGBA};
+  // Converted once here rather than per frame: toStdString() goes through
+  // toUtf8(), which mallocs and frees a QByteArray, and the sender thread is a
+  // realtime path. describeVideoFrame takes a string_view, so nothing needs a
+  // fresh std::string.
+  m_formatStr = m_settings.format.toStdString();
+
   if(m_settings.format == "UYVY")
     fmt = AV_PIX_FMT_UYVY422;
 
@@ -144,7 +152,13 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
       f->format = fmt;
       f->width = m_settings.width;
       f->height = m_settings.height;
-      av_frame_get_buffer(f, 0);
+      if(av_frame_get_buffer(f, 0) != 0)
+      {
+        // Unbacked staging frames would make every conversion describe a null
+        // pointer under a valid FourCC. Drop them; describeVideoFrame then
+        // refuses the format rather than sending nothing.
+        av_frame_free(&f);
+      }
     }
   }
 }
@@ -158,6 +172,14 @@ OutputNode::~OutputNode()
     if(m_senderThread.joinable())
       m_senderThread.join();
   }
+
+  // The last frame handed to send_video_async is still owned by the SDK: the
+  // call that releases it is send_destroy, and that lives in ~Sender, a member,
+  // which does not run until after this body. Freeing the staging frames here
+  // would hand the SDK freed memory to read -- measured as 8 of 8 frames
+  // corrupted on the wire, and invisible to ASan because libndi is not
+  // instrumented. Synchronise explicitly first.
+  m_sender.flush_async();
 
   if(m_swsCtx)
     sws_freeContext(m_swsCtx);
@@ -187,7 +209,7 @@ void OutputNode::senderThreadFunc()
     ndiFrame.frame_format_type = NDIlib_frame_format_type_progressive;
 
     if(!Ndi::describeVideoFrame(
-           m_settings.format.toStdString(), (const uint8_t*)readback.data.data(),
+           m_formatStr, (const uint8_t*)readback.data.data(),
            width, height, m_swsCtx, avframe[idx], ndiFrame))
     {
       m_pool.releaseUnsent(idx);
@@ -209,6 +231,9 @@ bool OutputNode::canRender() const
 
 void OutputNode::startRendering()
 {
+  // A rebuild reuses this node with a brand-new renderer that reads back into
+  // buffer 0; clear anything the previous run left behind first.
+  m_pool.reset();
   m_pool.m_running = true;
   m_senderThread = std::thread(&OutputNode::senderThreadFunc, this);
 }

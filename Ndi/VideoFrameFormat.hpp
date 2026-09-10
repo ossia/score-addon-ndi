@@ -46,18 +46,37 @@ inline bool describeVideoFrame(
     std::string_view format, const uint8_t* rgba, int width, int height,
     SwsContext* sws, AVFrame* staging, NDIlib_video_frame_v2_t& out) noexcept
 {
+  // Everything below hands the SDK a pointer it will read asynchronously, so a
+  // description that is merely well-formed is not enough: refuse anything that
+  // would point at nothing, or describe more bytes than exist.
+  if(!rgba || width <= 0 || height <= 0)
+    return false;
+
   out.xres = width;
   out.yres = height;
   out.frame_format_type = NDIlib_frame_format_type_progressive;
 
   if(format == "UYVY")
   {
-    if(!sws || !staging)
+    if(!sws || !staging || !staging->data[0] || staging->linesize[0] <= 0)
+      return false;
+
+    // The staging frame has to be at least as tall as what we are about to
+    // describe; sws_scale writes rows into it and we then publish `height`
+    // rows of it either way.
+    if(staging->height < height)
       return false;
 
     const uint8_t* inData[1] = {rgba};
     const int inLinesize[1] = {4 * width};
-    sws_scale(sws, inData, inLinesize, 0, height, staging->data, staging->linesize);
+    const int converted = sws_scale(
+        sws, inData, inLinesize, 0, height, staging->data, staging->linesize);
+
+    // A context built for a different geometry silently converts fewer rows (or
+    // none). Publishing `height` rows regardless describes bytes the staging
+    // allocation does not have.
+    if(converted != height)
+      return false;
 
     out.FourCC = NDIlib_FourCC_video_type_UYVY;
     out.p_data = staging->data[0];
