@@ -15,6 +15,7 @@
 #include <QOffscreenSurface>
 
 #include <atomic>
+#include <cstdint>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -48,7 +49,28 @@ struct OutputNode : score::gfx::OutputNode
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
   Gfx::InvertYRenderer* m_inv_y_renderer{};
-  QRhiReadbackResult m_readback[3];
+  // Readback pool. A frame handed to send_video_async stays owned by the SDK
+  // until the next send, so the renderer must never target a buffer that is
+  // still spoken for; the states below are what enforce that, and they are what
+  // let the RGBA path send the readback itself with no copy at all.
+  //
+  //   Free     - the renderer may read back into it
+  //   Queued   - readback done, waiting for the sender
+  //   Sending  - the sender is converting/submitting from it
+  //   InFlight - handed to the SDK, still being read
+  //
+  // Four buffers: at most one Queued, one Sending and one InFlight, so a Free
+  // one always exists.
+  enum class Buf : std::uint8_t
+  {
+    Free,
+    Queued,
+    Sending,
+    InFlight
+  };
+  static constexpr int kBuffers = 4;
+  QRhiReadbackResult m_readback[kBuffers];
+  std::atomic<Buf> m_bufState[kBuffers]{};
   int m_readbackIndex{0};  // Next buffer for readback
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
@@ -58,7 +80,7 @@ struct OutputNode : score::gfx::OutputNode
   // cannot be reused: the sws_scale for frame N+1 would overwrite what the SDK
   // is still reading from frame N. Rotating in step with m_readback gives the
   // same two frames of slack that make the RGBA path safe.
-  AVFrame* avframe[3]{};
+  AVFrame* avframe[kBuffers]{};
   bool m_hasSender{};
 
   // Async sender thread members
@@ -68,6 +90,7 @@ struct OutputNode : score::gfx::OutputNode
   std::atomic<bool> m_running{false};
   std::atomic<bool> m_frameReady{false};
   std::atomic<int> m_sendIndex{-1};  // Buffer ready for sender
+  std::atomic<int> m_inFlight{-1};   // Buffer the SDK is still reading
 
   void senderThreadFunc();
 
@@ -121,23 +144,25 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
   if(m_settings.format == "UYVY")
     fmt = AV_PIX_FMT_UYVY422;
 
+  // Only a format that needs a colour conversion needs somewhere to convert
+  // into. RGBA is already the wire layout and is sent straight from the readback
+  // buffer, so it allocates nothing here.
   if(fmt != AV_PIX_FMT_RGBA)
   {
     m_swsCtx = sws_getContext(
         m_settings.width, m_settings.height, AV_PIX_FMT_RGBA, m_settings.width,
         m_settings.height, AV_PIX_FMT_UYVY422, 0, 0, 0, 0);
-  }
 
-  // Every format stages, RGBA included: the frame handed to send_video_async is
-  // read by the SDK until the next send, so it can never be the readback buffer,
-  // which the renderer takes back as soon as render() returns.
-  for(auto& f : avframe)
-  {
-    f = av_frame_alloc();
-    f->format = fmt;
-    f->width = m_settings.width;
-    f->height = m_settings.height;
-    av_frame_get_buffer(f, 0);
+    // One per readback buffer: the SDK reads the frame it was handed until the
+    // next send, so the conversion for the next frame cannot reuse it.
+    for(auto& f : avframe)
+    {
+      f = av_frame_alloc();
+      f->format = fmt;
+      f->width = m_settings.width;
+      f->height = m_settings.height;
+      av_frame_get_buffer(f, 0);
+    }
   }
 }
 
@@ -173,6 +198,8 @@ void OutputNode::senderThreadFunc()
     if(idx >= 0)
     {
       m_frameReady = false;
+      m_sendIndex = -1;
+      m_bufState[idx].store(Buf::Sending, std::memory_order_release);
       lock.unlock();
 
       // Read directly from the readback buffer
@@ -190,9 +217,19 @@ void OutputNode::senderThreadFunc()
       if(!Ndi::describeVideoFrame(
              m_settings.format.toStdString(), (const uint8_t*)readback.data.data(),
              width, height, m_swsCtx, avframe[idx], ndiFrame))
+      {
+        m_bufState[idx].store(Buf::Free, std::memory_order_release);
         continue;
+      }
 
+      // This call is the synchronising event for the previous frame: the SDK
+      // has finished with that buffer and starts reading this one.
       m_sender.send_video_async(ndiFrame);
+
+      const int prev = m_inFlight.exchange(idx, std::memory_order_acq_rel);
+      m_bufState[idx].store(Buf::InFlight, std::memory_order_release);
+      if(prev >= 0)
+        m_bufState[prev].store(Buf::Free, std::memory_order_release);
     }
     else
     {
@@ -236,6 +273,14 @@ void OutputNode::render()
         // Signal sender thread with current readback buffer
         {
           std::lock_guard lock(m_mutex);
+          // A frame the sender never got to is dropped, not queued behind this
+          // one: for a live output the newest frame is the only one worth
+          // sending. Give its buffer back.
+          const int stale = m_sendIndex.load(std::memory_order_relaxed);
+          if(stale >= 0 && m_bufState[stale].load(std::memory_order_relaxed) == Buf::Queued)
+            m_bufState[stale].store(Buf::Free, std::memory_order_release);
+
+          m_bufState[m_readbackIndex].store(Buf::Queued, std::memory_order_release);
           m_sendIndex = m_readbackIndex;
           m_frameReady = true;
         }
@@ -243,8 +288,17 @@ void OutputNode::render()
       }
     }
 
-    // Advance to next readback buffer
-    m_readbackIndex = (m_readbackIndex + 1) % 3;
+    // Advance to the next Free buffer, stepping over any the sender or the SDK
+    // still owns. kBuffers guarantees this finds one.
+    for(int i = 1; i <= kBuffers; i++)
+    {
+      const int cand = (m_readbackIndex + i) % kBuffers;
+      if(m_bufState[cand].load(std::memory_order_acquire) == Buf::Free)
+      {
+        m_readbackIndex = cand;
+        break;
+      }
+    }
     m_inv_y_renderer->updateReadback(m_readback[m_readbackIndex]);
   }
 }
