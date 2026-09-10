@@ -304,6 +304,21 @@ void OutputNode::destroyOutput()
   if(!m_renderState)
     return;
 
+  // Before anything touches the QRhi: the GpuResourceRegistry owns QRhiBuffers
+  // (GpuResourceRegistry::env, raw_camera, ...) whose wrappers must be deleted
+  // while the QRhi is still alive. score::gfx::OutputNode::releaseRegistry()
+  // says so in as many words -- "concrete subclasses MUST call this from
+  // destroyOutput() BEFORE the QRhi is torn down" -- and skipping it leaves the
+  // Vulkan allocator holding live blocks at vmaDestroyAllocator:
+  //
+  //   ASSERT "Some allocations were not freed before destruction of this
+  //           memory block!" (vk_mem_alloc.h)
+  //
+  // This never showed while the node forced OpenGL, because there is no VMA
+  // there to complain. ScreenNode::destroyOutput carries the same call for the
+  // same reason. It is idempotent.
+  releaseRegistry();
+
   delete m_renderTarget;
   m_renderTarget = nullptr;
 
