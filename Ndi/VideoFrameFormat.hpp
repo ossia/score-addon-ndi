@@ -21,7 +21,6 @@
 
 extern "C" {
 #include <libavutil/frame.h>
-#include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
 
@@ -33,12 +32,11 @@ namespace Ndi
 /**
  * @brief Describe an RGBA readback as an NDI frame.
  *
- * @param staging  frame to write into, in the pixel format being described; must
- *                 be distinct from the one handed to the previous
+ * @param staging  frame to convert into, for formats that need a conversion;
+ *                 must be distinct from the one handed to the previous
  *                 send_video_async, which the SDK reads until the next one.
- *                 Every format writes here -- RGBA needs no conversion but must
- *                 still not hand the SDK the readback buffer itself, which the
- *                 render thread recycles every few frames.
+ *                 Unused by RGBA, which is already the wire layout and is sent
+ *                 straight from the readback with no copy.
  * @return false when the format is not one this addon writes, in which case the
  *         frame must not be sent: NDIlib_video_frame_v2_t defaults its FourCC
  *         to UYVY, so sending it would hand the SDK a null pointer labelled as
@@ -69,18 +67,13 @@ inline bool describeVideoFrame(
 
   if(format == "RGBA")
   {
-    if(!staging)
-      return false;
-
-    // No conversion, but still a copy: send_video_async keeps reading p_data
-    // until the next send, and the readback buffer this came from is handed
-    // back to the renderer immediately.
-    av_image_copy_plane(
-        staging->data[0], staging->linesize[0], rgba, 4 * width, 4 * width, height);
-
+    // Zero copy: the readback already holds exactly the bytes NDI wants, so the
+    // frame points straight at it. The caller must not let that buffer be
+    // rewritten until the SDK is done with it -- see the ownership states in
+    // OutputNode, which is where that is enforced.
     out.FourCC = NDIlib_FourCC_video_type_RGBA;
-    out.p_data = staging->data[0];
-    out.line_stride_in_bytes = staging->linesize[0];
+    out.p_data = const_cast<uint8_t*>(rgba);
+    out.line_stride_in_bytes = 4 * width;
     return true;
   }
 
