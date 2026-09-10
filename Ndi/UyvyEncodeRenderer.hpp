@@ -26,6 +26,7 @@
 #include <Gfx/Graph/OutputNode.hpp>
 #include <Gfx/Graph/RenderList.hpp>
 #include <Gfx/Graph/RenderState.hpp>
+#include <Gfx/Graph/encoders/ColorSpaceOut.hpp>
 #include <Gfx/Graph/encoders/UYVY.hpp>
 
 #include <QtGui/private/qrhi_p.h>
@@ -89,9 +90,18 @@ public:
     }
 
     auto enc = std::make_unique<score::gfx::UYVYEncoder>();
+    // BT.601 limited range, explicitly. The encoder's default is BT.709 FULL
+    // range, which would silently change what this device puts on the wire: the
+    // path this replaces converted with swscale, whose default for RGB -> UYVY
+    // is BT.601 limited (opaque red at Y=81, U=90, V=240). The loopback test
+    // pins those values against the real SDK, so a change here is a change in
+    // output colour, not an implementation detail.
     enc->init(
         *renderer.state.rhi, renderer.state, m_inputTarget.texture, sz.width(),
-        sz.height());
+        sz.height(),
+        score::gfx::colorMatrixOut(
+            AVCOL_SPC_SMPTE170M, AVCOL_TRC_SMPTE170M, AVCOL_RANGE_MPEG,
+            AVCOL_PRI_SMPTE170M));
     // We read the encoder's output texture into the output node's pool instead,
     // so the encoder must not also read it back into its own single buffer:
     // that would be a second full-frame transfer per frame, into memory the
