@@ -5,6 +5,8 @@
 #include <Gfx/SharedOutputSettings.hpp>
 #include <Video/Rescale.hpp>
 
+#include <utility>
+
 #include <score/gfx/OpenGL.hpp>
 
 #include <ossia/network/base/device.hpp>
@@ -163,7 +165,15 @@ void OutputNode::render()
         uint8_t* inData[1] = {(uint8_t*)readback.data.data()};
         int inLinesize[1] = {4 * width};
 
-        if(m_settings.format == "UYVY")
+        // Nothing to send yet: the readbacks start empty and the first frames
+        // arrive before one has completed. Reading pixelSize off an empty
+        // result gives 0x0, and a 0x0 frame whose p_data is the empty
+        // QByteArray is not a frame.
+        const bool haveFrame
+            = width > 0 && height > 0
+              && readback.data.size() >= qsizetype(width) * height * 4;
+
+        if(haveFrame && m_settings.format == "UYVY" && m_swsCtx && avframe)
         {
           sws_scale(
               m_swsCtx, inData, inLinesize, 0, height, avframe->data, avframe->linesize);
@@ -172,13 +182,28 @@ void OutputNode::render()
           frame.p_data = (uint8_t*)avframe->data[0];
           frame.line_stride_in_bytes = avframe->linesize[0];
         }
-        else if(m_settings.format == "RGBA")
+        else if(haveFrame && m_settings.format == "RGBA")
         {
           frame.FourCC = NDIlib_FourCC_video_type_RGBA;
           frame.p_data = (uint8_t*)readback.data.data();
           frame.line_stride_in_bytes = 4 * width;
         }
-        m_sender.send_video_async(frame);
+
+        // p_data is still null if the settings named a format this output does
+        // not produce -- the struct is zero-initialised and neither branch
+        // above ran. Handing that to the SDK is not a dropped frame, it is a
+        // null pointer and a FourCC of 0.
+        if(frame.p_data)
+        {
+          m_sender.send_video_async(frame);
+        }
+        else if(haveFrame)
+        {
+          static thread_local bool once = false;
+          if(!std::exchange(once, true))
+            qWarning() << "NDI output: no frame sent, unsupported format"
+                       << m_settings.format;
+        }
       }
     }
     if(m_currentReadback == m_readback + 0)
