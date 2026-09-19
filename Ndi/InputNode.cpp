@@ -540,6 +540,21 @@ bool InputDevice::reconnect()
 
     auto set = this->settings().deviceSpecificSettings.value<Ndi::InputSettings>();
 
+    // Documents saved while the settings dialog was dropping the source name
+    // have an empty path. The path row is hidden for NDI -- a device only ever
+    // gets one from the source enumerator, which sets it to the source name,
+    // which is also the device name -- so the name is the source that was meant.
+    auto source = set.path;
+    if(source.isEmpty())
+      source = this->settings().name;
+    if(source.isEmpty())
+    {
+      ossia::logger().error(
+          "NDI: device '{}' names no source",
+          this->settings().name.toStdString());
+      return false;
+    }
+
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
     if(plug)
     {
@@ -547,7 +562,7 @@ bool InputDevice::reconnect()
       m_stream->m_colorSetting = Ndi::colorSpaceSettingFromName(set.colorSpace);
       m_stream->m_receiveFormat = Ndi::receiveFormatFromName(set.receiveFormat);
       m_stream->m_deinterlace = Ndi::deinterlaceFromName(set.deinterlace);
-      m_stream->load(set.path.toStdString());
+      m_stream->load(source.toStdString());
 
       m_protocol = new Gfx::video_texture_input_protocol{m_stream, plug->exec};
       m_dev = std::make_unique<Gfx::video_texture_input_device>(

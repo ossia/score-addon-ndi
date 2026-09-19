@@ -165,8 +165,7 @@ Device::DeviceSettings InputSettingsWidget::getSettings() const
   set.protocol = InputFactory::static_concreteKey();
 
   Ndi::InputSettings specif;
-  specif.path
-      = set.deviceSpecificSettings.value<Gfx::SharedInputSettings>().path;
+  specif.path = m_shmPath->text();
   specif.colorSpace = m_colorSpace->currentText();
   specif.receiveFormat = m_receiveFormat->currentText();
   specif.deinterlace = m_deinterlace->currentText();
@@ -178,6 +177,12 @@ void InputSettingsWidget::setSettings(const Device::DeviceSettings& settings)
 {
   SharedInputSettingsWidget::setSettings(settings);
   const auto set = settings.deviceSpecificSettings.value<Ndi::InputSettings>();
+
+  // QVariant does not know that InputSettings derives from SharedInputSettings:
+  // the base widget asked the variant for a SharedInputSettings, got a
+  // default-constructed one, and emptied the source name with it.
+  m_shmPath->setText(set.path);
+
   // An empty or unknown name resolves to the default rather than to nothing: a
   // device saved before this field existed must still open.
   m_colorSpace->setCurrentText(
