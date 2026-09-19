@@ -5,28 +5,19 @@
  * @brief Output renderer that converts to the NDI wire format on the GPU.
  *
  * The alternative is InvertYRenderer + sws_scale: read RGBA back off the GPU,
- * then convert it on the sender thread. That conversion costs 21.5 ms per frame
- * at 2160p against a 16.67 ms budget at 60 fps, so 4K UYVY simply cannot keep
- * up, and it moves twice as many bytes across the bus as it needs to.
+ * then convert on the sender thread. That costs 21.5 ms a frame at 2160p
+ * against a 16.67 ms budget, so 4K UYVY cannot keep up, and it moves twice the
+ * bytes across the bus.
  *
- * score::gfx already has an encoder per wire format -- the same ones the AJA and
- * DeckLink playout paths use -- so this drives whichever one the output's format
- * calls for (Ndi/WireEncode.hpp maps the names) and folds the Y-flip into the
- * same shader, replacing InvertYRenderer rather than sitting behind it.
+ * score::gfx has an encoder per wire format, so this drives whichever the
+ * output's format calls for and folds the Y-flip into the same shader,
+ * replacing InvertYRenderer rather than sitting behind it.
  *
- * Two shapes come back:
- *
- *   - single-plane (UYVY, BGRA/BGRX): the encoder's output texture IS the
- *     framestore. Its own readback is switched off and this schedules one into
- *     whichever ReadbackPool buffer the output node currently owns -- the
- *     "direct-readback rung" that Gfx/tests/EncoderTester.cpp exercises. The
- *     bytes the GPU writes are the bytes handed to send_video_async.
- *
- *   - multi-plane (P216, NV12, I420, YV12): one readback per plane, in separate
- *     allocations, because that is what a QRhi readback does. NDI needs the
- *     planes adjacent in one buffer, so assembleInto() copies them there once
- *     the frame has completed. That copy is the cost of a planar format; the
- *     conversion itself still happens on the GPU.
+ * Every encoder is asked for its contiguous-framestore form, so its output
+ * texture IS the framestore. The encoder's own readback is switched off and
+ * this schedules one into whichever ReadbackPool buffer the output node
+ * currently owns: the bytes the GPU writes are the bytes handed to
+ * send_video_async.
  */
 
 #include <Gfx/Graph/NodeRenderer.hpp>
@@ -133,16 +124,12 @@ public:
         *renderer.state.rhi, renderer.state, m_inputTarget.texture, sz.width(),
         sz.height(), ndiColorMatrixOut(standard));
 
-    // Single-plane: we read the encoder's output texture into the output node's
-    // pool ourselves, so the encoder must not also read it back into its own
-    // buffer -- that would be a second full-frame transfer per frame, into
-    // memory the pool's ownership states do not cover.
-    //
-    // Multi-plane: the encoder's own per-plane readbacks are exactly what
-    // assembleInto() copies from, so they stay on.
-    enc->setReadbackEnabled(m_encoding.needsAssembly());
+    // We read the encoder's output texture into the output node's pool
+    // ourselves, so the encoder must not also read it into its own buffer:
+    // that is a second full-frame transfer, into memory the pool's ownership
+    // states do not cover.
+    enc->setReadbackEnabled(false);
 
-    m_pictureSize = sz;
     m_encoder = std::move(enc);
   }
 
@@ -169,9 +156,6 @@ public:
 
     m_encoder->exec(*renderer.state.rhi, cb);
 
-    if(m_encoding.needsAssembly())
-      return;  // the planes come back in the encoder's own buffers
-
     if(auto* out = m_encoder->outputTexture())
     {
       auto* batch = renderer.state.rhi->nextResourceUpdateBatch();
@@ -179,69 +163,6 @@ public:
       batch->readBackTexture(rb, m_readback);
       cb.resourceUpdate(batch);
     }
-  }
-
-  /// True when the frame still has to be assembled after the offscreen frame
-  /// ends -- the node calls assembleInto() for those.
-  bool needsAssembly() const noexcept
-  {
-    return m_encoder && m_encoding.needsAssembly();
-  }
-
-  /**
-   * @brief Copy the encoder's planes into the send buffer, adjacent and tight.
-   *
-   * Call after QRhi::endOffscreenFrame(), which is when the plane readbacks
-   * have landed. On any disagreement between what came back and what the wire
-   * format says it should be, this empties the buffer rather than sending a
-   * frame whose planes are at the wrong offsets: describeVideoFrame then
-   * refuses it, because readbackStride() of an empty buffer is 0.
-   */
-  void assembleInto()
-  {
-    if(!m_encoder || !m_readback || !m_encoding.needsAssembly())
-      return;
-
-    const int w = m_pictureSize.width(), h = m_pictureSize.height();
-    const int rowBytes = packedRowBytes(m_format, w);
-    const size_t total = framestoreBytes(m_format, w, h);
-
-    PlaneSource src[3]{};
-    for(int i = 0; i < m_encoding.planeCount; i++)
-    {
-      const auto& spec = m_encoding.planes[i];
-      const auto& rb = m_encoder->readback(spec.encoderPlane);
-      const int rows = h / spec.heightDiv;
-      const int tight = (w / spec.widthDiv) * spec.bytesPerTexel;
-      if(rb.data.isEmpty() || rows <= 0 || tight <= 0)
-      {
-        m_readback->data.clear();
-        return;
-      }
-      src[i] = PlaneSource{
-          .data = reinterpret_cast<const uint8_t*>(rb.data.constData()),
-          .srcStride = readbackStride(rb.data.size(), rows),
-          .rowBytes = tight,
-          .rows = rows};
-    }
-
-    if(size_t(m_readback->data.size()) != total)
-      m_readback->data.resize(total);
-
-    const size_t written = assembleFramestore(
-        reinterpret_cast<uint8_t*>(m_readback->data.data()), total, src,
-        m_encoding.planeCount);
-
-    // The planes must fill the framestore exactly. If the two arithmetics --
-    // this one, from the encoder's plane geometry, and VideoFrameFormat's, from
-    // the format's row size and row count -- ever disagree, the frame is not
-    // describable and must not go out.
-    if(written != total || rowBytes <= 0)
-    {
-      m_readback->data.clear();
-      return;
-    }
-    m_readback->pixelSize = QSize(w, framestoreRows(m_format, h));
   }
 
   void release(score::gfx::RenderList&) override
@@ -264,7 +185,6 @@ private:
   std::string m_format;
   NdiEncoding m_encoding;
   ColorSpaceSetting m_colorSpace{ColorSpaceSetting::Rec709};
-  QSize m_pictureSize;
 };
 
 }

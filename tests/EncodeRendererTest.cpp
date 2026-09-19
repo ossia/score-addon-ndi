@@ -250,7 +250,6 @@ void runP216Case(RenderState& state, int W, int H)
 
   const auto encoding = Ndi::ndiEncoding("P216");
   check(encoding.hasEncoder(), "P216 has a GPU encoder");
-  check(!encoding.needsAssembly(), "P216 sends without an assembly step");
   check(encoding.floatRender, "P216 asks for a float render target");
 
   const auto matrix = Ndi::ndiColorMatrixOut(Ndi::ColorSpaceSetting::Rec709, W, H);
@@ -312,44 +311,11 @@ void runP216Case(RenderState& state, int W, int H)
   check(total == size_t(4) * W * H, "framestore is two planes of 2*W*H");
   check(size_t(packedRb.data.size()) == total, "the readback IS the framestore");
 
-  // Assemble the reference the way the addon does for a planar format.
-  Ndi::PlaneSource src[2]{};
-  const Ndi::PlaneSpec refPlanes[2] = {{0, 1, 1, 2}, {1, 2, 1, 4}};
-  for(int i = 0; i < 2; i++)
-  {
-    const auto& rb = planar->readback(refPlanes[i].encoderPlane);
-    const int rows = H / refPlanes[i].heightDiv;
-    src[i] = Ndi::PlaneSource{
-        .data = reinterpret_cast<const uint8_t*>(rb.data.constData()),
-        .srcStride = Ndi::readbackStride(rb.data.size(), rows),
-        .rowBytes = (W / refPlanes[i].widthDiv) * refPlanes[i].bytesPerTexel,
-        .rows = rows};
-  }
-  std::vector<uint8_t> reference(total, 0);
-  const size_t written
-      = Ndi::assembleFramestore(reference.data(), reference.size(), src, 2);
-  check(written == total, "the reference planes fill the framestore exactly");
+  // Packed-equals-planes is score's gate now, over four formats and seven
+  // sizes, in score-plugin-gfx/tests/EncoderTester.cpp. What stays here is
+  // what is NDI's business: the framestore geometry and its description.
 
-  // THE check: the two encoders produce the same bytes.
   const auto* got = reinterpret_cast<const uint8_t*>(packedRb.data.constData());
-  size_t firstDiff = total;
-  int worst = 0;
-  for(size_t i = 0; i < total; i++)
-  {
-    const int d = std::abs(int(got[i]) - int(reference[i]));
-    if(d > worst)
-      worst = d;
-    if(d > 1 && firstDiff == total)
-      firstDiff = i;
-  }
-  std::printf("    packed vs planes: worst byte difference %d\n", worst);
-  if(firstDiff != total)
-    std::printf(
-        "    first difference at byte %zu (row %zu): packed %u, planes %u\n", firstDiff,
-        firstDiff / rowBytes, got[firstDiff], reference[firstDiff]);
-  // One least-significant bit of slack: the two shaders round their 16-bit
-  // quantisation independently. Anything more is a difference in the maths.
-  check(worst <= 1, "the packed encoder matches the plane encoder");
 
   // And the values themselves, in the standard the default calls for.
   const auto exp8 = expectedRed(
@@ -443,7 +409,6 @@ std::vector<uint8_t> runPlanarCase(RenderState& state, const char* fmt, int W, i
   // and stays here, is the framestore geometry and the plane ORDER -- which is
   // the only thing separating I420 from YV12.
   check(enc->planeCount() == 1, "4:2:0 sends as a single packed framestore");
-  check(!encoding.needsAssembly(), "and therefore needs no assembly step");
 
   // Exactly what WireEncodeRenderer does: the encoder's own readback is off,
   // and the node reads the output texture into a buffer it owns.

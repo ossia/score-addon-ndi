@@ -56,18 +56,6 @@ namespace Ndi
 //     the AVBufferRef's, whose destructor calls recv_free_video; on failure it
 //     is released here. Either way the caller must not release it.
 //
-// It used to, on every failure path -- and since `f` is passed by value,
-// av_frame_free(&f) freed the caller's frame while leaving the caller's
-// pointer dangling. read_frame_impl then freed it again:
-//
-//     if(auto res = ndi_video_to_avframe(..., frame, ...)) { ... }
-//     else { av_frame_free(&frame); ... }      // second free
-//
-// A double free of an AVFrame is heap corruption, not a leak. The path that
-// reached it most often was NDIlib_frame_format_type_interleaved, which used
-// to be rejected here -- so an interlaced source, received with
-// allow_video_fields (i.e. whenever the input is set to the 16-bit "Best"
-// format), corrupted the heap once per frame at 25 frames a second.
 AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
                               NDIlib_recv_instance_t recv,
                               NDIlib_video_frame_v2_t *ndi,
@@ -85,12 +73,10 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   f->height = h;
   f->pts    = ndi->timestamp;
 
-  // Nothing in an NDI frame states the matrix, and what a sender declares can
-  // be false -- NDI Test Patterns sends BT.601 bars labelled matrix="bt_709".
-  // So the matrix comes from the device's setting, which decides how much of
-  // the metadata to believe. The transfer and the primaries are taken from the
-  // metadata whenever it has them: those were accurate on a real HLG source,
-  // and there is no other way to learn them.
+  // Nothing in an NDI frame states the matrix, and a sender's declaration can
+  // be false -- NDI Test Patterns sends BT.601 bars labelled matrix="bt_709" --
+  // so the setting decides how much of it to believe. Transfer and primaries
+  // are taken from the metadata when present: there is no other source.
   const auto declared = Ndi::parseColorInfo(ndi->p_metadata);
   f->colorspace = Ndi::avColorSpace(
       Ndi::resolveYuvStandard(colorSetting, w, h, declared));
@@ -100,10 +86,7 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   if(declared.primaries)
     f->color_primaries = *declared.primaries;
 
-  // How this source delivers its fields, and whether the frame survives at all.
-  // Ndi/FrameFormat.hpp carries the decision and the history: the interleaved
-  // case used to fall into a default that freed the frame and returned nullptr,
-  // so an interlaced source showed nothing whenever the input asked for fields.
+  // How this source delivers its fields. See Ndi/FrameFormat.hpp.
   const auto ff = Ndi::decodeFrameFormat(ndi->frame_format_type);
   if(!ff.accept)
   {
@@ -282,12 +265,9 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
 
   return f;
 oom:
-  // Every path that can reach here has already done f->buf[0] = buf, so `buf`
-  // is the frame's reference, not a second one. Unref'ing it here and then
-  // letting the caller free the frame dropped the same reference twice.
-  // Leave it all to the caller's av_frame_free -- which also runs the buffer's
-  // destructor, and that is what releases the NDI frame, so this path honours
-  // the contract above without doing anything more.
+  // Every path here has already done f->buf[0] = buf, so `buf` is the frame's
+  // reference rather than a second one: the caller's av_frame_free releases it
+  // and, through the buffer's destructor, the NDI frame too.
   return nullptr;
 }
 
@@ -365,8 +345,7 @@ bool InputStream::load(const std::string& inputDevice) noexcept
   if(wantsBest && !m_ndi.supportsHDR())
   {
     // A v5 runtime answers a 16-bit request with a placeholder frame and no
-    // error. Refusing here costs a log line; not refusing costs a black
-    // picture nobody can explain.
+    // error, so refuse rather than show one.
     ossia::logger().error(
         "NDI: '{}' asks for 16-bit but the loaded runtime is {}. Falling back to "
         "8-bit; install an NDI 6 runtime for 16-bit and HDR.",

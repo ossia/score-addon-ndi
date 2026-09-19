@@ -31,9 +31,7 @@
  * the format -- that is what framestoreRows() is for. Get it wrong and
  * readbackStride() divides by the wrong number of rows, which silently yields a
  * stride that is a multiple or a fraction of the real one; the SDK then reads
- * every row from the wrong offset. The planar formats are assembled into one
- * tightly packed buffer by the renderer, because a QRhi readback lands in its
- * own allocation per plane and NDI needs them adjacent.
+ * every row from the wrong offset.
  */
 
 // Processing.NDI.structs.h uses NULL in its default arguments without
@@ -195,13 +193,11 @@ struct PlaneSource
 /**
  * @brief Copy planes into one tightly packed framestore, in order.
  *
- * A QRhi readback lands in its own allocation per plane, and NDI wants the
- * planes adjacent in one buffer, so a planar format costs one copy per frame.
- * The packed formats never come through here: their single readback IS the
- * framestore, which is what keeps the UYVY and RGBA paths zero-copy.
+ * Every format the output sends has a contiguous-framestore encoder, so
+ * nothing in the send path needs this. It stays as the reference the encoder
+ * tests measure the packed encoders against.
  *
- * @return bytes written, or 0 if anything did not add up -- in which case the
- *         destination must not be sent.
+ * @return bytes written, or 0 if anything did not add up.
  */
 inline size_t assembleFramestore(
     uint8_t* dst, size_t dstCapacity, const PlaneSource* planes, int count) noexcept

@@ -1,31 +1,24 @@
-// Exhaustive resolution x format sweep: GPU encode -> real NDI SDK -> receive.
+// Resolution x format sweep: GPU encode -> real NDI SDK -> receive.
 //
-// Everything else in tests/ pins one thing at one size. This drives the whole
-// send path across a panel of resolutions -- SD, HD, UHD, DCI, the degenerate
-// ones, the extreme aspect ratios, and the odd sizes the subsampled formats
-// cannot express -- against every wire format the addon can send, through
-// whichever NDI runtime is named on the command line.
+// Everything else in tests/ pins one thing at one size. This drives the send
+// path across SD, HD, UHD, DCI, degenerate and extreme-aspect sizes, and the
+// odd ones the subsampled formats cannot express, for every wire format.
 //
-// The runtime is dlopen'd rather than linked, for one reason: libndi.so.5 and
-// libndi.so.6 have different sonames, so a linked binary can only ever exercise
-// the one it was built against. libndi v5 and v6
-// behave differently on the receive side -- that difference is the point of
-// Phase 3 -- and a single binary has to be able to ask both.
+// The runtime is dlopen'd rather than linked: libndi.so.5 and libndi.so.6 have
+// different sonames, so a linked binary can only ever ask the one it was built
+// against, and phases 3, 7 and 8 exist to ask both.
 //
-// Phases, each independently reportable:
+//   1  structure: geometry, framestore size, stride, and that an inexpressible
+//      size is REFUSED rather than described as something valid but wrong
+//   2  round trip: the bytes the GPU produced, through the SDK, back as RGBA
+//   3  which YUV matrix the receiver assumes, per resolution
+//   4  encode cost per format per resolution
+//   6  dump raw framestores for comparison against ffmpeg
+//   7  chroma siting, from the sub-pixel position of a chroma edge
+//   8  chroma aliasing, box against a pre-filter
 //
-//   1  structural: geometry, framestore size, stride, and that the odd sizes a
-//      subsampled format cannot express are REFUSED rather than sent as
-//      something structurally valid but wrong.
-//   2  round trip: the bytes the GPU actually produced, through the SDK, back
-//      as RGBA, compared against the pattern that went in.
-//   3  the receiver's matrix, measured per resolution: send the same red
-//      encoded three ways and see which one the SDK's own receiver decodes
-//      correctly. This is the experiment the Rec.709 policy rests on, and it
-//      has to be re-run per runtime.
-//   4  wall-clock cost per format per resolution.
-//
-// Usage: FormatSweepTest [path/to/libndi.so.N] [--phases=1,2,3,4]
+// Usage: FormatSweepTest [path/to/libndi.so.N] [--phases=1234678]
+//                        [--dump=DIR --dumpsize=WxH]
 // Exits 77 (ctest SKIP) when there is no QRhi or no usable NDI runtime.
 
 #include <Gfx/Graph/RenderState.hpp>
@@ -273,7 +266,7 @@ Encoded encodeOnGpu(
   const auto standard = Ndi::resolveYuvStandard(setting, W, H);
   enc->init(
       rhi, state, input, W, H, Ndi::ndiColorMatrixOut(standard));
-  enc->setReadbackEnabled(encoding.needsAssembly());
+  enc->setReadbackEnabled(false);
 
   QRhiReadbackResult direct;
 
@@ -313,7 +306,6 @@ Encoded encodeOnGpu(
 
     enc->exec(rhi, *cb);
 
-    if(!encoding.needsAssembly())
     {
       auto* batch = rhi.nextResourceUpdateBatch();
       batch->readBackTexture(QRhiReadbackDescription{enc->outputTexture()}, &direct);
@@ -327,63 +319,17 @@ Encoded encodeOnGpu(
   const int rowBytes = Ndi::packedRowBytes(format, W);
   const int rows = Ndi::framestoreRows(format, H);
 
-  if(!encoding.needsAssembly())
+  if(direct.data.isEmpty())
   {
-    if(direct.data.isEmpty())
-    {
-      enc->release();
-      delete input;
-      out.why = "empty readback";
-      return out;
-    }
-    out.framestore.assign(
-        reinterpret_cast<const uint8_t*>(direct.data.constData()),
-        reinterpret_cast<const uint8_t*>(direct.data.constData())
-            + direct.data.size());
-    out.stride = Ndi::readbackStride(direct.data.size(), rows);
+    enc->release();
+    delete input;
+    out.why = "empty readback";
+    return out;
   }
-  else
-  {
-    // assembleInto(), verbatim in its arithmetic.
-    const size_t total = Ndi::framestoreBytes(format, W, H);
-    Ndi::PlaneSource src[3]{};
-    bool bad = false;
-    for(int i = 0; i < encoding.planeCount; i++)
-    {
-      const auto& spec = encoding.planes[i];
-      const auto& rb = enc->readback(spec.encoderPlane);
-      const int prows = H / spec.heightDiv;
-      const int tight = (W / spec.widthDiv) * spec.bytesPerTexel;
-      if(rb.data.isEmpty() || prows <= 0 || tight <= 0)
-      {
-        bad = true;
-        break;
-      }
-      src[i] = Ndi::PlaneSource{
-          .data = reinterpret_cast<const uint8_t*>(rb.data.constData()),
-          .srcStride = Ndi::readbackStride(rb.data.size(), prows),
-          .rowBytes = tight,
-          .rows = prows};
-    }
-    if(bad)
-    {
-      enc->release();
-      delete input;
-      out.why = "a plane came back empty";
-      return out;
-    }
-    out.framestore.resize(total);
-    const size_t written = Ndi::assembleFramestore(
-        out.framestore.data(), total, src, encoding.planeCount);
-    if(written != total)
-    {
-      enc->release();
-      delete input;
-      out.why = "assembled size disagrees with the format's arithmetic";
-      return out;
-    }
-    out.stride = Ndi::readbackStride(int(total), rows);
-  }
+  out.framestore.assign(
+      reinterpret_cast<const uint8_t*>(direct.data.constData()),
+      reinterpret_cast<const uint8_t*>(direct.data.constData()) + direct.data.size());
+  out.stride = Ndi::readbackStride(direct.data.size(), rows);
 
   enc->release();
   delete input;
@@ -726,9 +672,8 @@ void phase2(RenderState& state)
 // HD one as Rec.709 -- so encoding red as BT.601 would round trip perfectly at
 // 720x576 and badly at 1920x1080.
 //
-// Send the same red encoded all three ways, at each resolution, and report
-// which one comes back correct. Whatever this prints IS the rule the runtime
-// actually implements.
+// Send the same red encoded all three ways, at each resolution. Whatever this
+// prints IS the rule the runtime implements.
 void phase3(RenderState& state)
 {
   std::printf("\n================ Phase 3: what matrix does the RECEIVER use? \n");
@@ -855,24 +800,19 @@ void phase4(RenderState& state)
     }
     const auto encoding = Ndi::ndiEncoding(format);
     std::printf(
-        "   %s\n", encoding.needsAssembly() ? "1 (assembly)" : "0 (zero-copy)");
+        "   %s\n", "0 (zero-copy)");
   }
 }
 
 // ------------------------------------------------------------------- Phase 6
 //
-// Dump raw framestores so ffmpeg can be used as an outside opinion.
+// Dump raw framestores so ffmpeg can be asked the same question.
 //
-// Every other check in this file compares our code against our code: the
-// packed encoder against the plane encoder, the description against the SDK's
-// reading of it. That is circular in one specific place -- if BOTH of our
-// routes share a wrong assumption about a layout, nothing here notices. It is
-// exactly the situation P216 is in: its two routes disagree, both read their
-// own rows correctly, and nothing in this repository can say which is right.
-//
-// ffmpeg has no stake in the argument. Convert the same source to the same
-// pixel format with it, and whichever of our two routes matches is the one
-// telling the truth.
+// Every other check here compares our code against our code -- packed against
+// planes, the description against the SDK's reading of it -- so if both routes
+// shared a wrong assumption, nothing would notice. ffmpeg has no stake in it.
+// This is what caught P216PackedEncoder encoding the wrong pixel pair: the
+// plane route matched ffmpeg to 4 parts in 65535, the packed one to 52286.
 void phase6(RenderState& state)
 {
   std::printf("\n================ Phase 6: dump for ffmpeg comparison =======\n");
@@ -962,21 +902,11 @@ void phase6(RenderState& state)
 
 // ------------------------------------------------------------------- Phase 7
 //
-// Where does the receiver think a chroma sample sits?
-//
-// 4:2:0 has two conventions. Centre siting puts the chroma sample between the
-// two luma columns (a 2x2 box, which is what swscale emits); left siting puts
-// it ON the even column, which is what MPEG-2, H.264 and HEVC specify. Encode
-// with one and decode with the other and every chroma edge moves half a luma
-// pixel -- small, but it is a real colour fringe on hard edges and it is
-// permanent.
-//
-// Phase 2 cannot see this: it samples bar CENTRES, where a half-pixel chroma
-// shift changes nothing. This measures the thing itself. Colour bars give
-// seven vertical chroma edges at known positions; round trip them through the
-// SDK, find where each edge actually lands to sub-pixel precision, and report
-// the average displacement. The siting the receiver agrees with is the one
-// whose edges come back where they were put.
+// Where does the receiver think a chroma sample sits? Encode to one siting
+// convention and decode with the other and every chroma edge moves half a luma
+// pixel. Phase 2 cannot see it -- it samples bar CENTRES -- so this locates
+// each of the seven bar edges to sub-pixel precision after a round trip and
+// reports the average displacement.
 void phase7(RenderState& state)
 {
   std::printf("\n================ Phase 7: chroma siting, measured ==========\n");

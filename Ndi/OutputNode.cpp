@@ -248,11 +248,6 @@ void OutputNode::render()
 
     rhi->endOffscreenFrame();
 
-    // The plane readbacks have landed now, and not before: a planar format's
-    // framestore is built here, into the buffer the pool is about to queue.
-    if(m_wire_renderer && m_wire_renderer->needsAssembly())
-      m_wire_renderer->assembleInto();
-
     if(renderer->renderers.size() > 1)
     {
       if(m_sender.get_no_connections(0) > 0)
