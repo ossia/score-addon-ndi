@@ -201,7 +201,7 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
         tr("NDI|HX sources (phones, PTZ cameras) cannot be decoded: this NDI "
            "runtime needs FFmpeg %1, which is not installed. Such sources will "
            "show a \"Video decoder not found\" placeholder. See "
-           "<a href=\"https://ndi.video/formats\">ndi.video/formats</a>.")
+           "<a href=\"https://ndi.video/formats\">ndi.video/formats</a> and <a href=\"https://github.com/DistroAV/DistroAV/issues/1034\">https://github.com/DistroAV/DistroAV/issues/1034</a>.")
             .arg(hxDecoderLibs(ndiVersionMajor(Loader::instance().version())).avcodec),
         this};
     warn->setWordWrap(true);
