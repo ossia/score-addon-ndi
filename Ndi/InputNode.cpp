@@ -7,6 +7,12 @@
 #include <Gfx/GfxInputDevice.hpp>
 #include <Gfx/Graph/VideoNode.hpp>
 #include <Gfx/SharedInputSettings.hpp>
+
+#include <ossia/detail/logger.hpp>
+#include <Ndi/ColorInfo.hpp>
+#include <Ndi/FrameFormat.hpp>
+#include <Ndi/InputSettings.hpp>
+#include <Ndi/NdiColorSpace.hpp>
 #include <Video/ExternalInput.hpp>
 #include <Video/FrameQueue.hpp>
 #include <Video/VideoInterface.hpp>
@@ -43,10 +49,31 @@ namespace Ndi
 // Convert a NDI frame into an AVFrame.
 // The frame planes are reference-counted through AVBufferRef
 // so that av_frame_free frees the frame data.
+//
+// OWNERSHIP, on both success and failure:
+//   - the AVFrame `f` belongs to the CALLER. This function never frees it.
+//   - the NDI frame `ndi` belongs to THIS FUNCTION. On success its lifetime is
+//     the AVBufferRef's, whose destructor calls recv_free_video; on failure it
+//     is released here. Either way the caller must not release it.
+//
+// It used to, on every failure path -- and since `f` is passed by value,
+// av_frame_free(&f) freed the caller's frame while leaving the caller's
+// pointer dangling. read_frame_impl then freed it again:
+//
+//     if(auto res = ndi_video_to_avframe(..., frame, ...)) { ... }
+//     else { av_frame_free(&frame); ... }      // second free
+//
+// A double free of an AVFrame is heap corruption, not a leak. The path that
+// reached it most often was NDIlib_frame_format_type_interleaved, which used
+// to be rejected here -- so an interlaced source, received with
+// allow_video_fields (i.e. whenever the input is set to the 16-bit "Best"
+// format), corrupted the heap once per frame at 25 frames a second.
 AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
                               NDIlib_recv_instance_t recv,
                               NDIlib_video_frame_v2_t *ndi,
-                              AVFrame* f)
+                              AVFrame* f,
+                              Ndi::ColorSpaceSetting colorSetting,
+                              Video::Interlacing& interlacingOut)
 {
   if (!f)
     return nullptr;
@@ -58,32 +85,41 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   f->height = h;
   f->pts    = ndi->timestamp;
 
+  // Nothing in an NDI frame states the matrix, and what a sender declares can
+  // be false -- NDI Test Patterns sends BT.601 bars labelled matrix="bt_709".
+  // So the matrix comes from the device's setting, which decides how much of
+  // the metadata to believe. The transfer and the primaries are taken from the
+  // metadata whenever it has them: those were accurate on a real HLG source,
+  // and there is no other way to learn them.
+  const auto declared = Ndi::parseColorInfo(ndi->p_metadata);
+  f->colorspace = Ndi::avColorSpace(
+      Ndi::resolveYuvStandard(colorSetting, w, h, declared));
+  f->color_range = AVCOL_RANGE_MPEG;
+  if(declared.transfer)
+    f->color_trc = *declared.transfer;
+  if(declared.primaries)
+    f->color_primaries = *declared.primaries;
+
+  // How this source delivers its fields, and whether the frame survives at all.
+  // Ndi/FrameFormat.hpp carries the decision and the history: the interleaved
+  // case used to fall into a default that freed the frame and returned nullptr,
+  // so an interlaced source showed nothing whenever the input asked for fields.
+  const auto ff = Ndi::decodeFrameFormat(ndi->frame_format_type);
+  if(!ff.accept)
+  {
+    loader.recv_free_video(recv, ndi);
+    return nullptr;  // the caller owns f; we released the NDI frame
+  }
+  interlacingOut = ff.interlacing;
+
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(58, 0, 0)
-  switch (ndi->frame_format_type) {
-    case NDIlib_frame_format_type_progressive:
-      break;
-    case NDIlib_frame_format_type_field_0:
-      f->flags |= AV_FRAME_FLAG_INTERLACED;
-      f->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
-      break;
-    case NDIlib_frame_format_type_field_1:
-      f->flags |= AV_FRAME_FLAG_INTERLACED;
-      break;
-    case NDIlib_frame_format_type_interleaved:
-    default:
-      av_frame_free(&f);
-      return nullptr;
-  }
+  if(ff.interlaced)
+    f->flags |= AV_FRAME_FLAG_INTERLACED;
+  if(ff.topField)
+    f->flags |= AV_FRAME_FLAG_TOP_FIELD_FIRST;
 #else
-  switch (ndi->frame_format_type) {
-    case NDIlib_frame_format_type_interleaved:
-      f->interlaced_frame = 1; f->top_field_first = 1; break;
-    case NDIlib_frame_format_type_field_0:
-      f->interlaced_frame = 1; f->top_field_first = 1; break;
-    case NDIlib_frame_format_type_field_1:
-      f->interlaced_frame = 1; f->top_field_first = 0; break;
-    default: break;
-  }
+  f->interlaced_frame = ff.interlaced ? 1 : 0;
+  f->top_field_first = ff.topField ? 1 : 0;
 #endif
 
   switch (ndi->FourCC) {
@@ -101,8 +137,8 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
     case NDIlib_FourCC_video_type_PA16: f->format = AV_PIX_FMT_P216LE;  break; // alpha dropped
 #endif
     default:
-      av_frame_free(&f);
-      return nullptr;
+      loader.recv_free_video(recv, ndi);
+    return nullptr;  // the caller owns f; we released the NDI frame
   }
 
   struct NDIVideoCtx {
@@ -113,8 +149,8 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   auto ctx = (NDIVideoCtx*)av_malloc(sizeof(NDIVideoCtx));
   if (!ctx)
   {
-    av_frame_free(&f);
-    return nullptr;
+    loader.recv_free_video(recv, ndi);
+    return nullptr;  // the caller owns f; we released the NDI frame
   }
   ctx->loader = &loader;
   ctx->recv  = recv;
@@ -150,7 +186,9 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
     ctx->loader->recv_free_video(ctx->recv, &ctx->frame);
     av_free(ctx);
   }, ctx,  AV_BUFFER_FLAG_READONLY);
-  if (!buf) { av_free(ctx); av_frame_free(&f); return nullptr; }
+  // ctx is not owned by anything yet, and nothing will free the NDI frame for
+  // us, so do both here.
+  if (!buf) { av_free(ctx); loader.recv_free_video(recv, ndi); return nullptr; }
 
 #define ADDREF(slot) \
   do { \
@@ -244,8 +282,12 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
 
   return f;
 oom:
-  av_buffer_unref(&buf);
-  av_frame_free(&f);
+  // Every path that can reach here has already done f->buf[0] = buf, so `buf`
+  // is the frame's reference, not a second one. Unref'ing it here and then
+  // letting the caller free the frame dropped the same reference twice.
+  // Leave it all to the caller's av_frame_free -- which also runs the buffer's
+  // destructor, and that is what releases the NDI frame, so this path honours
+  // the contract above without doing anything more.
   return nullptr;
 }
 
@@ -280,6 +322,13 @@ private:
 
   const Ndi::Loader& m_ndi;
   Ndi::Receiver m_receiver;
+
+public:
+  /// How much of a frame's own colour declaration to believe, and what to ask
+  /// the SDK for. Set before load(); read on the receive thread from then on.
+  Ndi::ColorSpaceSetting m_colorSetting{Ndi::ColorSpaceSetting::Rec709};
+  Ndi::ReceiveFormat m_receiveFormat{Ndi::ReceiveFormat::EightBit};
+  Video::Deinterlace m_deinterlace{Video::Deinterlace::Weave};
 };
 W_OBJECT_IMPL(InputStream)
 
@@ -302,10 +351,32 @@ bool InputStream::load(const std::string& inputDevice) noexcept
   source.p_ndi_name = inputDevice.c_str();
   source.p_url_address = nullptr;
   NDIlib_recv_create_v3_t info;
-  info.allow_video_fields = false;
   info.bandwidth = NDIlib_recv_bandwidth_highest;
-  info.color_format = NDIlib_recv_color_format_UYVY_RGBA;
   info.source_to_connect_to = source;
+
+  // 8-bit: ask for UYVY/RGBA and let the SDK de-interlace. Measured at about
+  // 0.14 ms per frame, which is the cheapest correct handling of an interlaced
+  // source there is.
+  //
+  // Best: 16-bit where the source has it -- and then the SDK ignores
+  // allow_video_fields and delivers individual fields at twice the frame rate,
+  // which is why this is a setting and not the default.
+  bool wantsBest = m_receiveFormat == ReceiveFormat::Best;
+  if(wantsBest && !m_ndi.supportsHDR())
+  {
+    // A v5 runtime answers a 16-bit request with a placeholder frame and no
+    // error. Refusing here costs a log line; not refusing costs a black
+    // picture nobody can explain.
+    ossia::logger().error(
+        "NDI: '{}' asks for 16-bit but the loaded runtime is {}. Falling back to "
+        "8-bit; install an NDI 6 runtime for 16-bit and HDR.",
+        inputDevice, m_ndi.version());
+    wantsBest = false;
+  }
+
+  info.color_format = wantsBest ? NDIlib_recv_color_format_best
+                                : NDIlib_recv_color_format_UYVY_RGBA;
+  info.allow_video_fields = wantsBest;
 
   m_receiver.create(info);
 
@@ -422,14 +493,43 @@ AVFrame* InputStream::read_frame_impl() noexcept
       {
         AVFrame* frame = m_frames.newFrame().release();
 
-        if(auto res = ndi_video_to_avframe(this->m_ndi, this->m_receiver.impl, &ndi_frame, frame))
+        auto interlacing = Video::Interlacing::None;
+        if(auto res = ndi_video_to_avframe(
+               this->m_ndi, this->m_receiver.impl, &ndi_frame, frame, m_colorSetting,
+               interlacing))
         {
+          // Publish what this frame turned out to be on the ImageFormat the GPU
+          // decoder is built from. VideoNodeRenderer::checkFormat compares these
+          // against the ones it last built with, so a source that changes colour
+          // mid-stream -- switching HDR on, or a sender that starts declaring
+          // something -- rebuilds the decoder instead of decoding with the old
+          // matrix.
+          this->color_space = static_cast<AVColorSpace>(res->colorspace);
+          this->color_range = static_cast<AVColorRange>(res->color_range);
+          this->color_trc = static_cast<AVColorTransferCharacteristic>(res->color_trc);
+          this->color_primaries
+              = static_cast<AVColorPrimaries>(res->color_primaries);
+
+          // The picture is twice a field's height. Publishing the PICTURE size
+          // here is what lets the renderer size its texture for the whole thing
+          // while each frame fills half of it; videoDecoderNeedsRebuild knows
+          // about the factor of two, so this does not look like a size change
+          // on every frame.
+          this->interlacing = interlacing;
+          this->deinterlace = m_deinterlace;
+          this->width = res->width;
+          this->height = (interlacing == Video::Interlacing::Fields)
+                             ? res->height * 2
+                             : res->height;
           return res;
         }
         else
         {
+          // Only the AVFrame. ndi_video_to_avframe owns the NDI frame and has
+          // already released it -- freeing it again here is a double free in
+          // the SDK, and freeing `frame` used to be one in libavutil, because
+          // the converter freed it too through its by-value parameter.
           av_frame_free(&frame);
-          this->m_ndi.recv_free_video(this->m_receiver.impl, &ndi_frame);
           return nullptr;
         }
       }
@@ -587,12 +687,15 @@ bool InputDevice::reconnect()
     if(!ndi.available())
       return false;
 
-    auto set = this->settings().deviceSpecificSettings.value<Gfx::SharedInputSettings>();
+    auto set = this->settings().deviceSpecificSettings.value<Ndi::InputSettings>();
 
     auto plug = m_ctx.findPlugin<Gfx::DocumentPlugin>();
     if(plug)
     {
       m_stream = std::make_shared<InputStream>(ndi);
+      m_stream->m_colorSetting = Ndi::colorSpaceSettingFromName(set.colorSpace);
+      m_stream->m_receiveFormat = Ndi::receiveFormatFromName(set.receiveFormat);
+      m_stream->m_deinterlace = Ndi::deinterlaceFromName(set.deinterlace);
       m_stream->load(set.path.toStdString());
 
       m_protocol = new Gfx::video_texture_input_protocol{m_stream, plug->exec};
