@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <string_view>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -51,21 +52,46 @@ Rgb pixelAt(const NDIlib_video_frame_v2_t& f, int x, int y)
   return {px[0], px[1], px[2]};
 }
 
-/// Sends `format` until the receiver hands a video frame back, or we give up.
+/// Sends `format` until the receiver hands a video frame OF THIS FORMAT back.
+///
+/// The settle loop is not politeness, it is correctness. The send/receive
+/// pipeline is several frames deep, so the first frame that arrives after a
+/// format switch is still the PREVIOUS format's -- which means a loop that sends
+/// one format and takes the next frame reports each case's label against the
+/// case before it. Every colour assertion here was measuring the wrong frame
+/// until this loop existed, and it did not show up as a failure because the
+/// frame before was also red.
+///
+/// Nothing in an NDI frame identifies which send produced it, so the settle is
+/// by time: keep sending this case and throw away everything that arrives for
+/// long enough to flush what was queued before it.
 bool roundtrip(
     const char* format, const std::vector<uint8_t>& wire, int strideBytes,
     NDIlib_send_instance_t sender, NDIlib_recv_instance_t recv,
     NDIlib_video_frame_v2_t& received)
 {
   using namespace std::chrono;
+
+  NDIlib_video_frame_v2_t out{};
+  if(!Ndi::describeVideoFrame(format, wire.data(), kWidth, kHeight, strideBytes, out))
+    return false;
+  out.frame_rate_N = 60000;
+  out.frame_rate_D = 1000;
+
+  const auto settle = steady_clock::now() + milliseconds(1200);
+  while(steady_clock::now() < settle)
+  {
+    NDIlib_send_send_video_v2(sender, &out);
+    NDIlib_video_frame_v2_t stale{};
+    while(NDIlib_recv_capture_v3(recv, &stale, nullptr, nullptr, 0)
+          == NDIlib_frame_type_video)
+      NDIlib_recv_free_video_v2(recv, &stale);
+    std::this_thread::sleep_for(milliseconds(16));
+  }
+
   const auto deadline = steady_clock::now() + seconds(10);
   while(steady_clock::now() < deadline)
   {
-    NDIlib_video_frame_v2_t out{};
-    if(!Ndi::describeVideoFrame(format, wire.data(), kWidth, kHeight, strideBytes, out))
-      return false;
-    out.frame_rate_N = 60000;
-    out.frame_rate_D = 1000;
     NDIlib_send_send_video_v2(sender, &out);
 
     NDIlib_video_frame_v2_t vf{};
@@ -102,14 +128,94 @@ int main()
   // this packs them the same way rather than converting on the CPU: there is no
   // swscale in this addon any more. BT.601 limited range puts opaque red at
   // Y=81, U=90, V=240, which is what the pixel-format test pins independently.
+  //
+  // Rec.709 limited range, which is what this addon now encodes at every size
+  // and what the runtime decodes at every size. Measured against libndi 5.6.1
+  // and 6.2.0.3: the receiver converts YUV to RGB with Rec.709 whatever the
+  // resolution, SD included, so these bytes come back as pure red. The SDK
+  // documentation's SD/HD/UHD table would have called for BT.601 at 64x32, and
+  // packing that here returns (255, 24, 0) instead -- which is precisely the
+  // fault this policy avoids. Ndi/NdiColorSpace.hpp carries the measurements.
+  //
+  // The tolerances stay wide because what this test is for is the round trip:
+  // the FourCC, the stride and, for the planar formats, whether the SDK finds
+  // the chroma planes where describeVideoFrame said they would be.
   std::vector<uint8_t> uyvy(size_t(kWidth) * kHeight * 2);
   for(size_t i = 0; i < uyvy.size(); i += 4)
   {
-    uyvy[i + 0] = 90;   // U
-    uyvy[i + 1] = 81;   // Y0
+    uyvy[i + 0] = 102;  // U
+    uyvy[i + 1] = 63;   // Y0
     uyvy[i + 2] = 240;  // V
-    uyvy[i + 3] = 81;   // Y1
+    uyvy[i + 3] = 63;   // Y1
   }
+
+  // The same red in every other format this addon sends, packed by hand for the
+  // same reason: what is under test is whether the SDK reads a framestore
+  // described by Ndi::describeVideoFrame the way we said it would -- the plane
+  // offsets above all, which no amount of local checking can confirm. If our
+  // idea of where the chroma plane starts were wrong, the picture would come
+  // back with the wrong colour or the wrong geometry, and only a real receiver
+  // can say so.
+  const auto packWire = [&](std::string_view fmt) -> std::vector<uint8_t> {
+    const size_t bytes = size_t(Ndi::packedRowBytes(fmt, kWidth))
+                         * Ndi::framestoreRows(fmt, kHeight);
+    std::vector<uint8_t> v(bytes, 0);
+    const size_t luma = size_t(kWidth) * kHeight;
+
+    if(fmt == "RGBA" || fmt == "RGBX")
+      return rgba;
+    if(fmt == "UYVY")
+      return uyvy;
+    if(fmt == "BGRA" || fmt == "BGRX")
+    {
+      for(size_t i = 0; i < v.size(); i += 4)
+      {
+        v[i + 0] = 0;    // B
+        v[i + 1] = 0;    // G
+        v[i + 2] = 255;  // R
+        v[i + 3] = 255;
+      }
+      return v;
+    }
+    if(fmt == "P216")
+    {
+      // 16-bit: the 8-bit values scaled by 257, which is what the encoder
+      // produces for an 8-bit source. Y plane, then interleaved Cb,Cr at full
+      // height -- 4:2:2, so the chroma plane is as tall as the luma one.
+      auto* w16 = reinterpret_cast<uint16_t*>(v.data());
+      for(size_t i = 0; i < luma; i++)
+        w16[i] = uint16_t(63 * 257);
+      for(size_t i = 0; i < luma; i += 2)
+      {
+        w16[luma + i + 0] = uint16_t(102 * 257);
+        w16[luma + i + 1] = uint16_t(240 * 257);
+      }
+      return v;
+    }
+    if(fmt == "NV12")
+    {
+      std::fill_n(v.begin(), luma, uint8_t(63));
+      for(size_t i = luma; i + 1 < v.size(); i += 2)
+      {
+        v[i + 0] = 102;
+        v[i + 1] = 240;
+      }
+      return v;
+    }
+    if(fmt == "I420" || fmt == "YV12")
+    {
+      // I420 is Y, U, V; YV12 is Y, V, U. Red's U and V are 150 apart, so
+      // getting this backwards is not a subtle difference on the wire.
+      const size_t chroma = luma / 4;
+      std::fill_n(v.begin(), luma, uint8_t(63));
+      const uint8_t first = (fmt == "I420") ? 102 : 240;
+      const uint8_t second = (fmt == "I420") ? 240 : 102;
+      std::fill_n(v.begin() + luma, chroma, first);
+      std::fill_n(v.begin() + luma + chroma, chroma, second);
+      return v;
+    }
+    return v;
+  };
 
   const std::string name = "score-ndi-loopback-" + std::to_string(::getpid());
   NDIlib_send_create_t sendCfg{};
@@ -131,6 +237,7 @@ int main()
     return 77;
   }
   std::printf("  sender: %s\n", self->p_ndi_name ? self->p_ndi_name : "(unnamed)");
+  std::printf("  runtime: %s\n", NDIlib_version());
 
   NDIlib_recv_create_v3_t recvCfg{};
   recvCfg.source_to_connect_to = *self;
@@ -155,15 +262,24 @@ int main()
     const char* format;
     int tolerance;
   };
-  for(const Case c : {Case{"RGBA", 16}, Case{"UYVY", 48}})
+  for(const Case c : {Case{"RGBA", 16}, Case{"RGBX", 16}, Case{"BGRA", 16},
+                      Case{"BGRX", 16}, Case{"UYVY", 20}, Case{"P216", 20},
+                      Case{"NV12", 20}, Case{"I420", 20}, Case{"YV12", 20}})
   {
     NDIlib_video_frame_v2_t got{};
-    const bool isRgba = (std::string_view{c.format} == "RGBA");
-    const auto& wire = isRgba ? rgba : uyvy;
-    const int stride = isRgba ? 4 * kWidth : 2 * kWidth;
+    const std::vector<uint8_t> wire = packWire(c.format);
+    const int stride = Ndi::packedRowBytes(c.format, kWidth);
+    if(wire.empty() || stride <= 0)
+    {
+      CHECK(false, "%s: nothing to send", c.format);
+      continue;
+    }
     if(!roundtrip(c.format, wire, stride, sender, recv, got))
     {
-      std::printf("  skip %s: no frame came back within 10 s\n", c.format);
+      // Not a pass: a format this addon offers that the installed runtime will
+      // not carry is exactly what this test exists to find. The runtime version
+      // is printed at the top so it can be told from a network problem.
+      CHECK(false, "%s: no frame came back within 10 s", c.format);
       continue;
     }
 

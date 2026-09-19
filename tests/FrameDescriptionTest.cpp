@@ -110,7 +110,10 @@ int main()
 
   std::printf("-- formats this addon does not write --\n");
   {
-    for(const char* bad : {"", " ", "uyvy", "rgba", "UYVA", "P216", "NV12", "I420"})
+    // UYVA and PA16 carry an alpha plane and no GPU encoder produces one, so
+    // they stay refused; the rest of NDI's FourCCs are written now and are
+    // covered positively in PixelFormatTest.
+    for(const char* bad : {"", " ", "uyvy", "rgba", "UYVA", "PA16", "V210", "P010"})
     {
       NDIlib_video_frame_v2_t f{};
       checkRefused(bad, f, Ndi::describeVideoFrame(bad, rgba.data(), w, h, 4 * w, f));
