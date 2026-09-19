@@ -9,6 +9,7 @@ struct OutputSettings
   int width{};
   int height{};
   double rate{};
-  QString format; // RGBA, UYVY...
+  QString format;     // RGBA, UYVY, P216...
+  QString colorSpace; // see Ndi::ColorSpaceSetting; empty means the default
 };
 }

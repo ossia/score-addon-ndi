@@ -1,6 +1,6 @@
 #include <Gfx/GfxApplicationPlugin.hpp>
 #include <Ndi/ReadbackPool.hpp>
-#include <Ndi/UyvyEncodeRenderer.hpp>
+#include <Ndi/WireEncodeRenderer.hpp>
 #include <Ndi/VideoFrameFormat.hpp>
 
 #include <Gfx/GfxExecContext.hpp>
@@ -53,7 +53,12 @@ struct OutputNode : score::gfx::OutputNode
   // One of these is created in createRenderer, according to the format; the
   // callback below points whichever it is at the next pool buffer.
   Gfx::InvertYRenderer* m_inv_y_renderer{};
-  Ndi::UyvyEncodeRenderer* m_uyvy_renderer{};
+  Ndi::WireEncodeRenderer* m_wire_renderer{};
+
+  // The picture size the render target was actually created with, which is what
+  // the sender describes to the SDK. Written once in createOutput, before the
+  // sender thread starts, and read by it from then on.
+  QSize m_pictureSize;
   std::function<void(QRhiReadbackResult&)> m_updateReadback;
   // Readback pool. A frame handed to send_video_async stays owned by the SDK
   // until the next send, so the renderer must never target a buffer that is
@@ -121,19 +126,19 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
 {
   input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
 
-  AVPixelFormat fmt{AV_PIX_FMT_RGBA};
   // Converted once here rather than per frame: toStdString() goes through
   // toUtf8(), which mallocs and frees a QByteArray, and the sender thread is a
   // realtime path. describeVideoFrame takes a string_view, so nothing needs a
   // fresh std::string.
   m_formatStr = m_settings.format.toStdString();
 
-  if(m_settings.format == "UYVY")
-    fmt = AV_PIX_FMT_UYVY422;
-
-  // Only a format that needs a colour conversion needs somewhere to convert
-  // into. RGBA is already the wire layout and is sent straight from the readback
-  // buffer, so it allocates nothing here.
+  // A format this addon cannot send would otherwise be discovered per frame, in
+  // describeVideoFrame, on the sender thread, one refusal at a time.
+  if(!Ndi::findWireFormat(m_formatStr))
+  {
+    qWarning() << "Ndi::OutputNode: unsupported output format"
+               << m_settings.format << "-- nothing will be sent";
+  }
 }
 
 OutputNode::~OutputNode()
@@ -166,14 +171,16 @@ void OutputNode::senderThreadFunc()
 
     // Read directly from the readback buffer
     auto& readback = m_readback[idx];
-    const int height = readback.pixelSize.height();
 
-    // The readback's own width is NOT always the picture width. UYVYEncoder
-    // writes an RGBA8 target at half width, each texel carrying two pixels as
-    // (U, Y0, V, Y1), so the picture is twice as wide as the texture that came
-    // back. RGBA is one texel per pixel and needs no such correction.
-    const bool uyvy = (m_formatStr == "UYVY");
-    const int width = uyvy ? readback.pixelSize.width() * 2 : readback.pixelSize.width();
+    // The readback's own geometry is NOT the picture's, and how it differs
+    // depends on the format: UYVYEncoder writes an RGBA8 target at half width
+    // (two pixels per texel), a planar format's framestore is taller than the
+    // picture, and a padded readback is wider than either. So the picture size
+    // comes from the render target that was actually created, and the stride
+    // from the bytes that actually came back, divided by the number of rows the
+    // FORMAT says are in a framestore.
+    const int width = m_pictureSize.width();
+    const int height = m_pictureSize.height();
 
     NDIlib_video_frame_v2_t ndiFrame{};
     ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
@@ -183,7 +190,8 @@ void OutputNode::senderThreadFunc()
     // from the scene, UYVY through UYVYEncoder -- so there is nothing to convert
     // and nothing to copy. The stride comes from the readback because the
     // backend may pad rows.
-    const int stride = Ndi::readbackStride(readback.data.size(), height);
+    const int stride = Ndi::readbackStride(
+        readback.data.size(), Ndi::framestoreRows(m_formatStr, height));
     if(!Ndi::describeVideoFrame(
            m_formatStr, (const uint8_t*)readback.data.data(), width, height,
            stride, ndiFrame))
@@ -207,6 +215,15 @@ bool OutputNode::canRender() const
 
 void OutputNode::startRendering()
 {
+  // Idempotent on purpose. Graph::createAllRenderLists stops every output
+  // before starting it, but Graph::createSingleRenderList -- the inspector's
+  // texture-port preview -- calls startRendering() with no stopRendering()
+  // ahead of it, on an output that may already be running. Assigning to a
+  // joinable std::thread calls std::terminate(), so that path would take the
+  // whole application down rather than misbehave.
+  if(m_senderThread.joinable())
+    return;
+
   // A rebuild reuses this node with a brand-new renderer that reads back into
   // buffer 0; clear anything the previous run left behind first.
   m_pool.reset();
@@ -231,6 +248,11 @@ void OutputNode::render()
 
     rhi->endOffscreenFrame();
 
+    // The plane readbacks have landed now, and not before: a planar format's
+    // framestore is built here, into the buffer the pool is about to queue.
+    if(m_wire_renderer && m_wire_renderer->needsAssembly())
+      m_wire_renderer->assembleInto();
+
     if(renderer->renderers.size() > 1)
     {
       if(m_sender.get_no_connections(0) > 0)
@@ -241,8 +263,8 @@ void OutputNode::render()
 
     {
       auto& rb = m_readback[m_pool.advanceToFreeBuffer()];
-      if(m_uyvy_renderer)
-        m_uyvy_renderer->updateReadback(rb);
+      if(m_wire_renderer)
+        m_wire_renderer->updateReadback(rb);
       else if(m_inv_y_renderer)
         m_inv_y_renderer->updateReadback(rb);
     }
@@ -283,10 +305,25 @@ void OutputNode::createOutput(score::gfx::OutputConfiguration conf)
     return;
   }
   m_renderState->outputSize = m_renderState->renderSize;
+  m_pictureSize = m_renderState->renderSize;
 
   auto rhi = m_renderState->rhi;
+
+  // A 16-bit wire format wants more than 8 bits to encode from, or its extra
+  // bits are 8-bit values scaled up. The scene renders into RGBA16F for those,
+  // the way DirectVideoOutputNode does for the same reason (prefersFloatRender).
+  const bool wantsFloat = Ndi::ndiEncoding(m_formatStr).floatRender;
+  const auto texFormat
+      = wantsFloat ? QRhiTexture::RGBA16F : QRhiTexture::RGBA8;
+  if(wantsFloat && !rhi->isTextureFormatSupported(texFormat))
+  {
+    qWarning() << "Ndi::OutputNode: no RGBA16F render target available;"
+               << m_settings.format
+               << "will be encoded from 8-bit precision";
+  }
   m_texture = rhi->newTexture(
-      QRhiTexture::RGBA8, m_renderState->renderSize, 1,
+      rhi->isTextureFormatSupported(texFormat) ? texFormat : QRhiTexture::RGBA8,
+      m_renderState->renderSize, 1,
       QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource);
   m_texture->create();
   m_renderTarget = rhi->newTextureRenderTarget({m_texture});
@@ -349,20 +386,24 @@ OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 
   // A rebuild lands here with a fresh renderer bound to buffer 0, which is what
   // ReadbackPool::reset() in startRendering() lines the pool back up with.
-  if(m_formatStr == "UYVY")
+  if(Ndi::ndiEncoding(m_formatStr).hasEncoder())
   {
-    // Convert on the GPU. The encoder folds the Y-flip into the same shader, so
-    // there is no InvertYRenderer in this path at all -- and no sws_scale on the
-    // sender thread, which at 2160p cost 21.5 ms against a 16.67 ms budget.
-    auto* enc = new Ndi::UyvyEncodeRenderer{*this, rt, readback0};
-    self->m_uyvy_renderer = enc;
+    // Convert on the GPU, through score::gfx's encoder for this wire format.
+    // The encoder folds the Y-flip into the same shader, so there is no
+    // InvertYRenderer in this path at all -- and no sws_scale on the sender
+    // thread, which at 2160p cost 21.5 ms against a 16.67 ms budget.
+    auto* enc = new Ndi::WireEncodeRenderer{
+        *this, rt, readback0, m_formatStr,
+        Ndi::colorSpaceSettingFromName(m_settings.colorSpace)};
+    self->m_wire_renderer = enc;
     self->m_inv_y_renderer = nullptr;
-      return enc;
+    return enc;
   }
 
+  // RGBA and RGBX: the scene texture is already those bytes.
   auto* inv = new Gfx::InvertYRenderer{*this, rt, readback0};
   self->m_inv_y_renderer = inv;
-  self->m_uyvy_renderer = nullptr;
+  self->m_wire_renderer = nullptr;
   return inv;
 }
 
