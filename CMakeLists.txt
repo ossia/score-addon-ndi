@@ -206,7 +206,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     target_include_directories(score_addon_ndi_live_source_probe
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
     target_link_libraries(score_addon_ndi_live_source_probe
-      PRIVATE score_plugin_gfx ${CMAKE_DL_LIBS} avutil)
+      PRIVATE score_plugin_gfx score_plugin_media ${CMAKE_DL_LIBS} avutil)
     target_compile_features(score_addon_ndi_live_source_probe PRIVATE cxx_std_20)
   endif()
 
