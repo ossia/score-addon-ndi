@@ -59,19 +59,6 @@ target_link_libraries(score_addon_ndi
 # Target-specific options
 setup_score_plugin(score_addon_ndi)
 
-# The widget-level tests compile the addon's own sources rather than linking
-# score_addon_ndi: with shared plugins nothing but the plugin entry point is
-# exported, so linking it leaves every class the tests touch undefined.
-set(SCORE_ADDON_NDI_TESTED_SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/Ndi/InputFactory.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/Ndi/InputNode.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/Ndi/Loader.cpp"
-)
-set(SCORE_ADDON_NDI_TESTED_LIBS
-  score_plugin_engine score_plugin_media score_plugin_gfx
-  avformat avutil swscale Qt6::Widgets ${CMAKE_DL_LIBS}
-)
-
 # --- tests --------------------------------------------------------------------
 # The frame description needs no GPU, no NDI runtime and no score, so it is
 # testable on its own. Gated on SCORE_TESTING, which only the coverage job sets,
@@ -202,12 +189,11 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
 
   # The settings-dialog preview: a live source through the real graph.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PreviewTest.cpp")
-    add_executable(score_addon_ndi_preview_test
-      tests/PreviewTest.cpp ${SCORE_ADDON_NDI_TESTED_SOURCES})
+    add_executable(score_addon_ndi_preview_test tests/PreviewTest.cpp)
     target_include_directories(score_addon_ndi_preview_test
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
     target_link_libraries(score_addon_ndi_preview_test
-      PRIVATE ${SCORE_ADDON_NDI_TESTED_LIBS})
+      PRIVATE score_addon_ndi Qt6::Widgets)
     target_compile_features(score_addon_ndi_preview_test PRIVATE cxx_std_20)
     if(COMMAND add_test)
       add_test(NAME score_addon_ndi_preview COMMAND score_addon_ndi_preview_test)
@@ -219,12 +205,11 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   # The settings dialog's round trip, which is where a device's source name was
   # being dropped. Needs the widgets, so it runs on the offscreen platform.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/SettingsRoundTripTest.cpp")
-    add_executable(score_addon_ndi_settings_round_trip_test
-      tests/SettingsRoundTripTest.cpp ${SCORE_ADDON_NDI_TESTED_SOURCES})
+    add_executable(score_addon_ndi_settings_round_trip_test tests/SettingsRoundTripTest.cpp)
     target_include_directories(score_addon_ndi_settings_round_trip_test
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
     target_link_libraries(score_addon_ndi_settings_round_trip_test
-      PRIVATE ${SCORE_ADDON_NDI_TESTED_LIBS})
+      PRIVATE score_addon_ndi Qt6::Widgets)
     target_compile_features(score_addon_ndi_settings_round_trip_test PRIVATE cxx_std_20)
     if(COMMAND add_test)
       add_test(NAME score_addon_ndi_settings_round_trip

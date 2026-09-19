@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QLineEdit>
 
+#include <score_addon_ndi_export.h>
+
 #include <memory>
 
 class QLabel;
@@ -50,7 +52,8 @@ public:
       const QVariant& data, const VisitorVariant& visitor) const override;
 };
 
-class InputSettingsWidget final : public Gfx::SharedInputSettingsWidget
+class SCORE_ADDON_NDI_EXPORT InputSettingsWidget final
+    : public Gfx::SharedInputSettingsWidget
 {
 public:
   InputSettingsWidget(QWidget* parent = nullptr);

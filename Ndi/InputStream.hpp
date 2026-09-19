@@ -8,6 +8,8 @@
 
 #include <QObject>
 
+#include <score_addon_ndi_export.h>
+
 #include <verdigris>
 
 #include <atomic>
@@ -16,7 +18,7 @@
 
 namespace Ndi
 {
-class InputStream final
+class SCORE_ADDON_NDI_EXPORT InputStream final
     : public QObject
     , public Video::ExternalInput
 {
