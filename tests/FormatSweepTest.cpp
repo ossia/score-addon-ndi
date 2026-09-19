@@ -57,6 +57,7 @@ int g_checks = 0;
 // Phase 6 writes the encoders' raw framestores here so an EXTERNAL tool --
 // ffmpeg -- can be asked the same question independently.
 std::string g_dumpDir;
+std::string g_serve;
 int g_dumpW = 1920, g_dumpH = 1080;
 
 void check(bool ok, const std::string& what)
@@ -1169,6 +1170,58 @@ void phase9(RenderState& state)
   }
 }
 
+// ------------------------------------------------------------------ --serve
+//
+// Encode the SMPTE reference in one wire format and send it until killed, so
+// an INDEPENDENT receiver can be pointed at it. Everything else in this file
+// checks our sender against our own reading of it; gst-launch with ndisrc
+// checks it against somebody else's.
+void serve(RenderState& state, const std::string& format)
+{
+  const int W = 1920, H = 1080;
+  constexpr int Lv = 191;
+  const int bar[7][3] = {{Lv, Lv, Lv}, {Lv, Lv, 0}, {0, Lv, Lv}, {0, Lv, 0},
+                         {Lv, 0, Lv}, {Lv, 0, 0}, {0, 0, Lv}};
+  std::vector<uint8_t> rgba(size_t(W) * H * 4);
+  for(int y = 0; y < H; y++)
+    for(int x = 0; x < W; x++)
+    {
+      const int b = std::min(6, x * 7 / W);
+      uint8_t* q = rgba.data() + (size_t(y) * W + x) * 4;
+      q[0] = uint8_t(bar[b][0]);
+      q[1] = uint8_t(bar[b][1]);
+      q[2] = uint8_t(bar[b][2]);
+      q[3] = 255;
+    }
+
+  auto enc = encodeOnGpu(state, format, W, H, Ndi::ColorSpaceSetting::Rec709, rgba);
+  if(!enc.ok)
+  {
+    std::printf("encode failed: %s\n", enc.why.c_str());
+    return;
+  }
+  NDIlib_video_frame_v2_t frame{};
+  if(!Ndi::describeVideoFrame(
+         format, enc.framestore.data(), W, H, enc.stride, frame))
+  {
+    std::printf("describe failed\n");
+    return;
+  }
+  frame.frame_rate_N = 30000;
+  frame.frame_rate_D = 1000;
+
+  NDIlib_send_create_t sc{};
+  const std::string name = "score-" + format;
+  sc.p_ndi_name = name.c_str();
+  sc.clock_video = true;
+  auto* send = g_ndi->send_create(&sc);
+  if(!send)
+    return;
+  std::printf("serving %s as \"%s\" -- ctrl-c to stop\n", format.c_str(), name.c_str());
+  for(;;)
+    g_ndi->send_send_video_v2(send, &frame);
+}
+
 }
 
 // ===================================================================== driver
@@ -1205,6 +1258,8 @@ void runAll(const std::string& phases)
     phase8(*state);
   if(phases.find('9') != std::string::npos)
     phase9(*state);
+  if(!g_serve.empty() && g_ndi)
+    serve(*state, g_serve);
   // Phase 5 (packed 4:2:0 == planes) moved to score's own EncoderTester: the
   // encoders are score::gfx's, used by every consumer that asks for a
   // contiguous framestore, so the gate belongs there and not behind an NDI
@@ -1227,6 +1282,8 @@ int main(int argc, char** argv)
     const std::string a = argv[i];
     if(a.rfind("--phases=", 0) == 0)
       phases = a.substr(9);
+    else if(a.rfind("--serve=", 0) == 0)
+      g_serve = a.substr(8);
     else if(a.rfind("--dump=", 0) == 0)
       g_dumpDir = a.substr(7);
     else if(a.rfind("--dumpsize=", 0) == 0)
