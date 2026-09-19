@@ -11,6 +11,7 @@
 #include <ossia/detail/logger.hpp>
 #include <Ndi/ColorInfo.hpp>
 #include <Ndi/FrameFormat.hpp>
+#include <Ndi/ReceiveLayout.hpp>
 #include <Ndi/InputSettings.hpp>
 #include <Ndi/NdiColorSpace.hpp>
 #include <Video/ExternalInput.hpp>
@@ -105,24 +106,13 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   f->top_field_first = ff.topField ? 1 : 0;
 #endif
 
-  switch (ndi->FourCC) {
-    case NDIlib_FourCC_video_type_UYVY: f->format = AV_PIX_FMT_UYVY422; break;
-    case NDIlib_FourCC_video_type_UYVA: f->format = AV_PIX_FMT_UYVY422; break; // alpha dropped
-    case NDIlib_FourCC_video_type_BGRA: f->format = AV_PIX_FMT_BGRA;    break;
-    case NDIlib_FourCC_video_type_BGRX: f->format = AV_PIX_FMT_BGR0;    break;
-    case NDIlib_FourCC_video_type_RGBA: f->format = AV_PIX_FMT_RGBA;    break;
-    case NDIlib_FourCC_video_type_RGBX: f->format = AV_PIX_FMT_RGB0;    break;
-    case NDIlib_FourCC_video_type_NV12: f->format = AV_PIX_FMT_NV12;    break;
-    case NDIlib_FourCC_video_type_I420: f->format = AV_PIX_FMT_YUV420P; break;
-    case NDIlib_FourCC_video_type_YV12: f->format = AV_PIX_FMT_YUV420P; break; // planes reordered
-#ifdef AV_PIX_FMT_P216LE
-    case NDIlib_FourCC_video_type_P216: f->format = AV_PIX_FMT_P216LE;  break;
-    case NDIlib_FourCC_video_type_PA16: f->format = AV_PIX_FMT_P216LE;  break; // alpha dropped
-#endif
-    default:
-      loader.recv_free_video(recv, ndi);
+  const auto layout = Ndi::receiveLayout(ndi->FourCC, s, h);
+  if(!layout.supported)
+  {
+    loader.recv_free_video(recv, ndi);
     return nullptr;  // the caller owns f; we released the NDI frame
   }
+  f->format = layout.format;
 
   struct NDIVideoCtx {
     const Ndi::Loader* loader{};
@@ -139,28 +129,7 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   ctx->recv  = recv;
   ctx->frame = *ndi;
 
-  size_t total;
-  switch (ndi->FourCC) {
-    case NDIlib_FourCC_video_type_I420:
-    case NDIlib_FourCC_video_type_YV12:
-      total = (size_t)s * h + 2 * ((s / 2) * (h / 2));
-      break;
-    case NDIlib_FourCC_video_type_NV12:
-      total = (size_t)s * h + (size_t)s * (h / 2);
-      break;
-    case NDIlib_FourCC_video_type_P216:
-      total = (size_t)s * h * 2;
-      break;
-    case NDIlib_FourCC_video_type_PA16:
-      total = (size_t)s * h * 3;
-      break;
-    case NDIlib_FourCC_video_type_UYVA:
-      total = (size_t)s * h * 2;
-      break;
-    default:
-      total = (size_t)s * h;
-      break;
-  }
+  const size_t total = layout.total;
 
   AVBufferRef *buf = av_buffer_create(ndi->p_data, total,
                                       [](void *opaque, uint8_t *data)
@@ -173,89 +142,17 @@ AVFrame *ndi_video_to_avframe(const Ndi::Loader& loader,
   // us, so do both here.
   if (!buf) { av_free(ctx); loader.recv_free_video(recv, ndi); return nullptr; }
 
-#define ADDREF(slot) \
-  do { \
-        f->buf[(slot)] = av_buffer_ref(buf); \
-        if (!f->buf[(slot)]) goto oom; \
-  } while (0)
-
-  switch (ndi->FourCC) {
-
-    case NDIlib_FourCC_video_type_UYVA:
-      // FIXME no proper zero-copy alpha format in ffmpeg for this yet :(
-    case NDIlib_FourCC_video_type_UYVY:
-
-    case NDIlib_FourCC_video_type_BGRA:
-    case NDIlib_FourCC_video_type_BGRX:
-    case NDIlib_FourCC_video_type_RGBA:
-    case NDIlib_FourCC_video_type_RGBX:
-      f->buf[0]      = buf;  // transfer ownership
-      f->data[0]     = ndi->p_data;
-      f->linesize[0] = s;
-      break;
-
-    case NDIlib_FourCC_video_type_NV12:
-      f->buf[0] = buf;
-      ADDREF(1);
-      f->data[0]     = ndi->p_data;
-      f->data[1]     = ndi->p_data + (size_t)s * h;
-      f->linesize[0] = s;
-      f->linesize[1] = s;
-      break;
-
-    case NDIlib_FourCC_video_type_I420: {
-      int cs = s / 2, ch = h / 2;
-      f->buf[0] = buf;
-      ADDREF(1); ADDREF(2);
-      f->data[0]     = ndi->p_data;
-      f->data[1]     = ndi->p_data + (size_t)s * h;
-      f->data[2]     = ndi->p_data + (size_t)s * h + (size_t)cs * ch;
-      f->linesize[0] = s;
-      f->linesize[1] = cs;
-      f->linesize[2] = cs;
-      break;
-    }
-
-    case NDIlib_FourCC_video_type_YV12: {
-      int cs = s / 2, ch = h / 2;
-      uint8_t *cr = ndi->p_data + (size_t)s  * h;
-      uint8_t *cb = cr           + (size_t)cs * ch;
-      f->buf[0] = buf;
-      ADDREF(1); ADDREF(2);
-      f->data[0]     = ndi->p_data;
-      f->data[1]     = cb;
-      f->data[2]     = cr;
-      f->linesize[0] = s;
-      f->linesize[1] = cs;
-      f->linesize[2] = cs;
-      break;
-    }
-
-    case NDIlib_FourCC_video_type_P216:
-      f->buf[0] = buf;
-      ADDREF(1);
-      f->data[0]     = ndi->p_data;
-      f->data[1]     = ndi->p_data + (size_t)s * h;
-      f->linesize[0] = s;
-      f->linesize[1] = s;
-      break;
-
-    case NDIlib_FourCC_video_type_PA16:
-      // FIXME ffmpeg does not have any compatible format yet.
-      // Maybe we should sws_scale :'(
-      f->buf[0] = buf;
-      ADDREF(1);
-      f->data[0]     = ndi->p_data;
-      f->data[1]     = ndi->p_data + (size_t)s * h;
-      f->linesize[0] = s;
-      f->linesize[1] = s;
-      break;
-
-    default:
+  f->buf[0] = buf;  // transfer ownership
+  f->data[0] = ndi->p_data + layout.offset[0];
+  f->linesize[0] = layout.stride[0];
+  for(int i = 1; i < layout.planeCount; i++)
+  {
+    f->buf[i] = av_buffer_ref(buf);
+    if(!f->buf[i])
       goto oom;
+    f->data[i] = ndi->p_data + layout.offset[i];
+    f->linesize[i] = layout.stride[i];
   }
-
-#undef ADDREF
 
   if (ndi->picture_aspect_ratio > 0.0f && w > 0 && h > 0)
   {
@@ -423,44 +320,6 @@ void InputStream::buffer_thread() noexcept
   }
 }
 
-static std::optional<AVPixelFormat> getPixelFormat(NDIlib_FourCC_video_type_e fourcc)
-{
-  switch(fourcc)
-  {
-    case NDIlib_FourCC_video_type_UYVY:
-      return AV_PIX_FMT_UYVY422;
-    case NDIlib_FourCC_video_type_UYVA:
-      // ? return AV_PIX_FMT_YUVA422P;
-      return std::nullopt;
-    case NDIlib_FourCC_video_type_P216:
-      return AV_PIX_FMT_YUV422P16LE;
-    case NDIlib_FourCC_video_type_PA16:
-      // ? return AV_PIX_FMT_YUVA422P;
-      return std::nullopt;
-    case NDIlib_FourCC_video_type_YV12:
-      // ? fmt = AV_PIX_FMT_YUV420P;
-      return std::nullopt;
-    case NDIlib_FourCC_video_type_I420:
-      return AV_PIX_FMT_YUV420P;
-    case NDIlib_FourCC_video_type_NV12:
-      return AV_PIX_FMT_NV12;
-    case NDIlib_FourCC_video_type_BGRA:
-      return AV_PIX_FMT_BGRA;
-      break;
-    case NDIlib_FourCC_video_type_BGRX:
-      return AV_PIX_FMT_BGR0;
-      break;
-    case NDIlib_FourCC_video_type_RGBA:
-      return AV_PIX_FMT_RGBA;
-      break;
-    case NDIlib_FourCC_video_type_RGBX:
-      return AV_PIX_FMT_RGB0;
-      break;
-    default:
-      return std::nullopt;
-  }
-}
-
 AVFrame* InputStream::read_frame_impl() noexcept
 {
   NDIlib_video_frame_v2_t ndi_frame;
@@ -468,7 +327,12 @@ AVFrame* InputStream::read_frame_impl() noexcept
   switch(m_receiver.capture(&ndi_frame, nullptr, nullptr, 1000))
   {
     case NDIlib_frame_type_video: {
-      if(auto format = getPixelFormat(ndi_frame.FourCC))
+      // One table decides what is decodable: Ndi::receiveLayout. There used
+      // to be a second here, and they had drifted -- this one dropped YV12,
+      // UYVA and PA16 outright and named a different pixel format for P216.
+      if(Ndi::receiveLayout(ndi_frame.FourCC, ndi_frame.line_stride_in_bytes,
+                            ndi_frame.yres)
+             .supported)
       {
         AVFrame* frame = m_frames.newFrame().release();
 

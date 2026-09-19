@@ -168,6 +168,21 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     endif()
   endif()
 
+  # Where each received FourCC's planes are. Pure: no SDK, no GPU, no sender.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ReceiveLayoutTest.cpp")
+    add_executable(score_addon_ndi_receive_layout_test tests/ReceiveLayoutTest.cpp)
+    target_include_directories(score_addon_ndi_receive_layout_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_receive_layout_test
+      PRIVATE score_plugin_gfx score_plugin_media avutil)
+    target_compile_features(score_addon_ndi_receive_layout_test PRIVATE cxx_std_20)
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_receive_layout
+               COMMAND score_addon_ndi_receive_layout_test)
+      set_tests_properties(score_addon_ndi_receive_layout PROPERTIES LABELS "ndi")
+    endif()
+  endif()
+
   # The frame_format_type decision, including the interleaved case that used to
   # silently drop every frame of an interlaced source. Pure: no SDK, no GPU.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FrameFormatTest.cpp")
