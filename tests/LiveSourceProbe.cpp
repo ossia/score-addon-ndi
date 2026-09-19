@@ -446,7 +446,7 @@ int main(int argc, char** argv)
   // still misses sources that are demonstrably sending.
   std::string connectTo;
   int secs = 4;
-  bool best = false, fields = false;
+  bool best = false, fields = false, fastest = false;
   for(int i = 1; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -456,6 +456,8 @@ int main(int argc, char** argv)
       filter = a.substr(9);
     else if(a == "--best")
       best = true;
+    else if(a == "--fastest")
+      fastest = true;
     else if(a == "--fields")
       fields = true;
     else if(a == "--bars")
@@ -477,7 +479,10 @@ int main(int argc, char** argv)
     return 77;
 
   std::printf(
-      "receive mode: %s, fields %s\n\n", best ? "best (16-bit where offered)" : "8-bit",
+      "receive mode: %s, fields %s\n\n",
+      fastest ? "fastest (no conversion)"
+      : best  ? "best (16-bit where offered)"
+              : "8-bit",
       fields ? "allowed" : "not allowed");
 
   std::vector<NDIlib_source_t> keep;
@@ -560,8 +565,9 @@ int main(int argc, char** argv)
     // The name string must outlive the connect call; keep[] owns it via the
     // finder, which is still alive.
     rc.source_to_connect_to = keep[i];
-    rc.color_format = best ? NDIlib_recv_color_format_best
-                           : NDIlib_recv_color_format_UYVY_RGBA;
+    rc.color_format = fastest ? NDIlib_recv_color_format_fastest
+                      : best    ? NDIlib_recv_color_format_best
+                                : NDIlib_recv_color_format_UYVY_RGBA;
     rc.bandwidth = NDIlib_recv_bandwidth_highest;
     rc.allow_video_fields = fields;
     auto* recv = g_ndi->recv_create_v3(&rc);
