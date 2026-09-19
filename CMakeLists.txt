@@ -23,12 +23,14 @@ add_library(score_addon_ndi
   Ndi/InputNode.hpp
   Ndi/InputFactory.hpp
   Ndi/InputSettings.hpp
+  Ndi/InputStream.hpp
   Ndi/ReceiveLayout.hpp
   Ndi/FrameFormat.hpp
   Ndi/ColorInfo.hpp
   Ndi/OutputNode.hpp
   Ndi/OutputFactory.hpp
   Ndi/Loader.hpp
+  Ndi/HxDecoder.hpp
   Ndi/NdiColorSpace.hpp
   Ndi/ReadbackPool.hpp
   Ndi/WireEncode.hpp
@@ -182,6 +184,21 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
       add_test(NAME score_addon_ndi_receive_layout
                COMMAND score_addon_ndi_receive_layout_test)
       set_tests_properties(score_addon_ndi_receive_layout PROPERTIES LABELS "ndi")
+    endif()
+  endif()
+
+  # The settings-dialog preview: a live source through the real graph.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PreviewTest.cpp")
+    add_executable(score_addon_ndi_preview_test tests/PreviewTest.cpp)
+    target_include_directories(score_addon_ndi_preview_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_preview_test
+      PRIVATE score_addon_ndi Qt6::Widgets)
+    target_compile_features(score_addon_ndi_preview_test PRIVATE cxx_std_20)
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_preview COMMAND score_addon_ndi_preview_test)
+      set_tests_properties(score_addon_ndi_preview PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui")
     endif()
   endif()
 

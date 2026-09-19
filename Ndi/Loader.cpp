@@ -1,5 +1,6 @@
 #include <ossia/detail/logger.hpp>
 
+#include <Ndi/HxDecoder.hpp>
 #include <Ndi/Loader.hpp>
 #if defined(_WIN32)
 #include <windows.h>
@@ -216,6 +217,7 @@ Loader::Loader()
       // the outside: the symptom is a black or frozen picture on HDR sources
       // and nothing at all in the log.
       m_version = v;
+      m_path = ndi_path;
       ossia::logger().info("NDI runtime: {}", v);
       if(!supportsHDR())
         ossia::logger().info(
@@ -248,4 +250,50 @@ Loader::~Loader()
   }
 }
 
+
+bool hxDecoderAvailable(const Loader& ndi) noexcept
+{
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) \
+    || defined(__NetBSD__)
+  if(!ndi.available())
+    return true;
+
+  const auto libs = hxDecoderLibs(ndiVersionMajor(ndi.version()));
+  if(!libs.known())
+    return true;
+
+  std::string dir;
+  if(const auto slash = ndi.path().find_last_of('/'); slash != std::string::npos)
+    dir = ndi.path().substr(0, slash + 1);
+
+  auto loadable = [&dir](const char* soname) {
+    const std::string_view name{soname};
+    const auto dot = name.find(".so.");
+    std::string priv{name.substr(0, dot)};
+    priv += "-ndi";
+    priv += name.substr(dot);
+
+    // The runtime searches its own directory before the loader path, and
+    // prefers the privately named copy there, so a system whose only usable
+    // FFmpeg sits next to libndi still decodes.
+    const std::string candidates[]
+        = {dir + priv, dir + std::string{name}, priv, std::string{name}};
+    for(const auto& candidate : candidates)
+    {
+      if(candidate.empty())
+        continue;
+      if(void* h = dlopen(candidate.c_str(), RTLD_LOCAL | RTLD_LAZY))
+      {
+        dlclose(h);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return loadable(libs.avcodec) && loadable(libs.avutil);
+#else
+  return true;
+#endif
+}
 }
