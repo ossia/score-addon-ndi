@@ -202,7 +202,7 @@ int main(int argc, char** argv)
 {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   std::string path, filter, save;
-  bool best = false;
+  bool best = false, fastest = false;
   for(int i = 1; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -212,6 +212,8 @@ int main(int argc, char** argv)
       save = a.substr(7);
     else if(a == "--best")
       best = true;
+    else if(a == "--fastest")
+      fastest = true;
     else
       path = a;
   }
@@ -254,10 +256,14 @@ int main(int argc, char** argv)
 
   NDIlib_recv_create_v3_t rc{};
   rc.source_to_connect_to = src;
-  rc.color_format = best ? NDIlib_recv_color_format_best
-                         : NDIlib_recv_color_format_UYVY_RGBA;
+  // UYVY_RGBA makes the SDK convert every YUV source to UYVY before we see
+  // it, so it never exercises the planar receive paths. "fastest" hands over
+  // whatever the sender actually put on the wire.
+  rc.color_format = fastest ? NDIlib_recv_color_format_fastest
+                    : best  ? NDIlib_recv_color_format_best
+                            : NDIlib_recv_color_format_UYVY_RGBA;
   rc.bandwidth = NDIlib_recv_bandwidth_highest;
-  rc.allow_video_fields = best;
+  rc.allow_video_fields = best || fastest;
   auto* recv = g_ndi->recv_create_v3(&rc);
 
   NDIlib_video_frame_v2_t vf{};
@@ -274,8 +280,24 @@ int main(int argc, char** argv)
   const auto L
       = Ndi::receiveLayout(vf.FourCC, vf.line_stride_in_bytes, vf.yres);
   const auto ff = Ndi::decodeFrameFormat(vf.frame_format_type);
+  const char* fcc = "(other)";
+  switch(vf.FourCC)
+  {
+    case NDIlib_FourCC_video_type_UYVY: fcc = "UYVY"; break;
+    case NDIlib_FourCC_video_type_UYVA: fcc = "UYVA"; break;
+    case NDIlib_FourCC_video_type_P216: fcc = "P216"; break;
+    case NDIlib_FourCC_video_type_PA16: fcc = "PA16"; break;
+    case NDIlib_FourCC_video_type_YV12: fcc = "YV12"; break;
+    case NDIlib_FourCC_video_type_I420: fcc = "I420"; break;
+    case NDIlib_FourCC_video_type_NV12: fcc = "NV12"; break;
+    case NDIlib_FourCC_video_type_BGRA: fcc = "BGRA"; break;
+    case NDIlib_FourCC_video_type_BGRX: fcc = "BGRX"; break;
+    case NDIlib_FourCC_video_type_RGBA: fcc = "RGBA"; break;
+    case NDIlib_FourCC_video_type_RGBX: fcc = "RGBX"; break;
+    default: break;
+  }
   std::printf(
-      "frame:  %dx%d  %d plane(s)  interlacing %s\n", vf.xres, vf.yres,
+      "frame:  %dx%d  %s  %d plane(s)  interlacing %s\n", vf.xres, vf.yres, fcc,
       L.planeCount,
       ff.interlacing == Video::Interlacing::Fields  ? "Fields"
       : ff.interlacing == Video::Interlacing::Woven ? "Woven"
