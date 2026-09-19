@@ -198,6 +198,17 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     endif()
   endif()
 
+  # A live frame through the real GPU decoder, checked against SMPTE bars.
+  # Needs a live source and a QRhi, so it is a tool and not a ctest.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/LiveDecodeProbe.cpp")
+    add_executable(score_addon_ndi_live_decode_probe tests/LiveDecodeProbe.cpp)
+    target_include_directories(score_addon_ndi_live_decode_probe
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_live_decode_probe
+      PRIVATE score_plugin_gfx score_plugin_media ${QT_PREFIX}::Gui ${CMAKE_DL_LIBS} avutil)
+    target_compile_features(score_addon_ndi_live_decode_probe PRIVATE cxx_std_20)
+  endif()
+
   # Asks real senders on the network what they actually transmit, and measures
   # the YUV matrix from their pixels rather than believing their metadata. Not a
   # ctest: it needs live sources, so it is a tool run by hand.
