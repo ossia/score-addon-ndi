@@ -30,6 +30,7 @@
 #include <dlfcn.h>
 
 #include <clocale>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -188,6 +189,14 @@ const char* kBarName[7]
 // uses to get a readback the right way up for a wire format -- so the readback
 // is upside down relative to the picture. Undo it on the way in rather than
 // sampling mirrored rows everywhere.
+double alphaAt(const QRhiReadbackResult& rb, int x, int y)
+{
+  const int h = rb.pixelSize.height();
+  const int stride = rb.data.size() / h;
+  return double(*(reinterpret_cast<const uint8_t*>(rb.data.constData())
+                  + ptrdiff_t(h - 1 - y) * stride + ptrdiff_t(x) * 4 + 3));
+}
+
 Rgb readbackAt(const QRhiReadbackResult& rb, int x, int y)
 {
   const int h = rb.pixelSize.height();
@@ -203,6 +212,11 @@ int main(int argc, char** argv)
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   std::string path, filter, save;
   bool best = false, fastest = false;
+  int mode = -1;  // explicit NDIlib_recv_color_format_e, overrides the flags
+  // Whether the SENDER ramps alpha down the picture. It is a property of the
+  // source, not of the format delivered: mode 3 hands an alpha source over as
+  // plain RGBA, and the ramp is still in it.
+  bool alphaRamp = false;
   for(int i = 1; i < argc; i++)
   {
     const std::string a = argv[i];
@@ -214,6 +228,10 @@ int main(int argc, char** argv)
       best = true;
     else if(a == "--fastest")
       fastest = true;
+    else if(a.rfind("--mode=", 0) == 0)
+      mode = std::stoi(a.substr(7));
+    else if(a == "--alpha-ramp")
+      alphaRamp = true;
     else
       path = a;
   }
@@ -259,11 +277,12 @@ int main(int argc, char** argv)
   // UYVY_RGBA makes the SDK convert every YUV source to UYVY before we see
   // it, so it never exercises the planar receive paths. "fastest" hands over
   // whatever the sender actually put on the wire.
-  rc.color_format = fastest ? NDIlib_recv_color_format_fastest
-                    : best  ? NDIlib_recv_color_format_best
-                            : NDIlib_recv_color_format_UYVY_RGBA;
+  rc.color_format = mode >= 0 ? NDIlib_recv_color_format_e(mode)
+                    : fastest ? NDIlib_recv_color_format_fastest
+                    : best    ? NDIlib_recv_color_format_best
+                              : NDIlib_recv_color_format_UYVY_RGBA;
   rc.bandwidth = NDIlib_recv_bandwidth_highest;
-  rc.allow_video_fields = best || fastest;
+  rc.allow_video_fields = best || fastest || mode >= 100;
   auto* recv = g_ndi->recv_create_v3(&rc);
 
   NDIlib_video_frame_v2_t vf{};
@@ -340,6 +359,7 @@ int main(int argc, char** argv)
   source->color_space = Ndi::avColorSpace(Ndi::resolveYuvStandard(
       Ndi::ColorSpaceSetting::Rec709, frame->width, pictureH));
   source->color_range = AVCOL_RANGE_MPEG;
+  source->native_format = L.native;
   source->interlacing = ff.interlacing;
   source->deinterlace = Video::Deinterlace::Bob;
 
@@ -363,6 +383,19 @@ int main(int argc, char** argv)
     video->update();
     out->render();
   }
+  // Decode cost with the pipeline already built: upload, shade, read back.
+  const auto t0 = std::chrono::steady_clock::now();
+  constexpr int kReps = 20;
+  for(int i = 0; i < kReps; i++)
+  {
+    video->update();
+    out->render();
+  }
+  const double decodeMs
+      = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0)
+            .count()
+        / kReps;
 
   const auto& rb = out->m_readback;
   check(!rb.data.isEmpty(), "the GPU produced a picture");
@@ -395,7 +428,11 @@ int main(int argc, char** argv)
   // Segment the rendered row the same way LiveSourceProbe segments the wire,
   // on luma and chroma together, so the two neutral columns of a SMPTE pattern
   // do not merge.
-  const int y = rb.pixelSize.height() / 4;
+  // When the sender ramps alpha down the picture, read the bars near the
+  // bottom where it is ~255 and the colour is not attenuated by compositing.
+  const bool hasAlpha = alphaRamp;
+  const int y = hasAlpha ? rb.pixelSize.height() - 3
+                         : rb.pixelSize.height() / 4;
   std::vector<std::pair<int, int>> seg;
   {
     Rgb prev{};
@@ -461,7 +498,48 @@ int main(int argc, char** argv)
   // wrong plane offset very much more.
   check(best_err < 5.0, "the rendered bars match the SMPTE reference");
 
+  // Alpha, for the formats that carry one.
+  //
+  // Not from the readback's alpha channel: the graph composites the video onto
+  // the output, so what comes back is the OUTPUT's alpha, not the source's.
+  // The alpha is visible in what the compositing did instead -- the sender
+  // ramps it down the picture, so a bar's brightness has to ramp with it, and
+  // a dropped alpha plane leaves the bar at full brightness throughout.
+  if(hasAlpha)
+  {
+    const int H2 = rb.pixelSize.height();
+    const auto& wb = seg[first];  // the white bar, brightest and unambiguous
+    const int xs = (wb.first + wb.second) / 2;
+
+    double worst = 0;
+    bool monotonic = true;
+    double prev = -1;
+    for(int i = 1; i <= 16; i++)
+    {
+      const int yy = std::min(H2 - 3, H2 * i / 16);
+      const auto c = readbackAt(rb, xs, yy);
+      const double lum = (c.r + c.g + c.b) / 3.0;
+      const double want = double(kLevel) * yy / (H2 - 1);
+      worst = std::max(worst, std::abs(lum - want));
+      if(lum + 2.0 < prev)
+        monotonic = false;
+      prev = lum;
+    }
+    std::printf(
+        "alpha:  white bar ramps with the sent alpha, worst deviation %.1f\n",
+        worst);
+    check(monotonic, "the bar ramps rather than sitting at full brightness");
+    check(worst < 12.0, "and follows the alpha that was sent");
+  }
+
   graph.clearEdges();
+  std::printf(
+      "RESULT fourcc=%s planes=%d interlacing=%s err=%.2f decode_ms=%.2f fail=%d\n",
+      fcc, L.planeCount,
+      ff.interlacing == Video::Interlacing::Fields   ? "Fields"
+      : ff.interlacing == Video::Interlacing::Woven  ? "Woven"
+                                                     : "None",
+      best_err, decodeMs, g_fail);
   std::printf(
       "\nlive decode: %s (%d failure%s)\n", g_fail ? "FAILED" : "passed", g_fail,
       g_fail == 1 ? "" : "s");

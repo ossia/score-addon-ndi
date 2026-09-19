@@ -18,6 +18,7 @@
  */
 
 #include <Video/VideoEnums.hpp>
+#include <Video/VideoPixelFormat.hpp>
 
 // Processing.NDI.structs.h uses NULL without including anything that defines
 // it; it compiles elsewhere only because other headers get there first.
@@ -37,8 +38,11 @@ struct ReceiveLayout
   bool supported{false};
   AVPixelFormat format{AV_PIX_FMT_NONE};
 
-  /// Planes handed to the AVFrame, which is not always what the wire carries:
-  /// the alpha of UYVA and PA16 is present in memory and not referenced here.
+  /// Set for the two layouts no AVPixelFormat describes, and the thing that
+  /// picks their decoder. Unknown for everything else, where `format` decides.
+  Video::VideoPixelFormat native{Video::VideoPixelFormat::Unknown};
+
+  /// Planes handed to the AVFrame, alpha included.
   int planeCount{0};
   size_t offset[3]{};
   int stride[3]{};
@@ -61,46 +65,59 @@ receiveLayout(NDIlib_FourCC_video_type_e fourcc, int s, int h) noexcept
   switch(fourcc)
   {
     case NDIlib_FourCC_video_type_UYVY:
-      return {true, AV_PIX_FMT_UYVY422, 1, {0}, {s}, luma};
+      return {.supported = true, .format = AV_PIX_FMT_UYVY422,
+              .planeCount = 1, .offset = {0}, .stride = {s}, .total = luma};
 
     // UYVY followed by a full-resolution 8-bit alpha plane (4:2:2:4), so the
     // alpha is half the size of the UYVY part rather than equal to it.
+    // AV_PIX_FMT_UYVY422 is the closest AVPixelFormat and describes only the
+    // first plane; `native` is what selects the decoder.
     case NDIlib_FourCC_video_type_UYVA:
-      return {true, AV_PIX_FMT_UYVY422, 1, {0}, {s}, luma + size_t(cs) * h};
+      return {.supported = true, .format = AV_PIX_FMT_UYVY422,
+              .native = Video::VideoPixelFormat::UYVA422A, .planeCount = 2,
+              .offset = {0, luma}, .stride = {s, cs},
+              .total = luma + size_t(cs) * h};
 
     case NDIlib_FourCC_video_type_BGRA:
-      return {true, AV_PIX_FMT_BGRA, 1, {0}, {s}, luma};
+      return {.supported = true, .format = AV_PIX_FMT_BGRA,
+              .planeCount = 1, .offset = {0}, .stride = {s}, .total = luma};
     case NDIlib_FourCC_video_type_BGRX:
-      return {true, AV_PIX_FMT_BGR0, 1, {0}, {s}, luma};
+      return {.supported = true, .format = AV_PIX_FMT_BGR0,
+              .planeCount = 1, .offset = {0}, .stride = {s}, .total = luma};
     case NDIlib_FourCC_video_type_RGBA:
-      return {true, AV_PIX_FMT_RGBA, 1, {0}, {s}, luma};
+      return {.supported = true, .format = AV_PIX_FMT_RGBA,
+              .planeCount = 1, .offset = {0}, .stride = {s}, .total = luma};
     case NDIlib_FourCC_video_type_RGBX:
-      return {true, AV_PIX_FMT_RGB0, 1, {0}, {s}, luma};
+      return {.supported = true, .format = AV_PIX_FMT_RGB0,
+              .planeCount = 1, .offset = {0}, .stride = {s}, .total = luma};
 
     case NDIlib_FourCC_video_type_NV12:
-      return {
-          true, AV_PIX_FMT_NV12, 2, {0, luma}, {s, s}, luma + size_t(s) * ch};
+      return {.supported = true, .format = AV_PIX_FMT_NV12, .planeCount = 2,
+              .offset = {0, luma}, .stride = {s, s},
+              .total = luma + size_t(s) * ch};
 
     case NDIlib_FourCC_video_type_I420:
-      return {
-          true,          AV_PIX_FMT_YUV420P,        3,
-          {0, luma, luma + chroma420},              {s, cs, cs},
-          luma + 2 * chroma420};
+      return {.supported = true, .format = AV_PIX_FMT_YUV420P, .planeCount = 3,
+              .offset = {0, luma, luma + chroma420}, .stride = {s, cs, cs},
+              .total = luma + 2 * chroma420};
 
     // YV12 is I420 with the chroma planes exchanged on the wire: Cr first.
     // data[1] is always Cb to libavutil, so it points at the SECOND one.
     case NDIlib_FourCC_video_type_YV12:
-      return {
-          true,          AV_PIX_FMT_YUV420P,        3,
-          {0, luma + chroma420, luma},              {s, cs, cs},
-          luma + 2 * chroma420};
+      return {.supported = true, .format = AV_PIX_FMT_YUV420P, .planeCount = 3,
+              .offset = {0, luma + chroma420, luma}, .stride = {s, cs, cs},
+              .total = luma + 2 * chroma420};
 
     case NDIlib_FourCC_video_type_P216:
-      return {true, AV_PIX_FMT_P216LE, 2, {0, luma}, {s, s}, 2 * luma};
+      return {.supported = true, .format = AV_PIX_FMT_P216LE, .planeCount = 2,
+              .offset = {0, luma}, .stride = {s, s}, .total = 2 * luma};
 
     // P216 followed by a 16-bit full-resolution alpha plane.
     case NDIlib_FourCC_video_type_PA16:
-      return {true, AV_PIX_FMT_P216LE, 2, {0, luma}, {s, s}, 3 * luma};
+      return {.supported = true, .format = AV_PIX_FMT_P216LE,
+              .native = Video::VideoPixelFormat::PA16, .planeCount = 3,
+              .offset = {0, luma, 2 * luma}, .stride = {s, s, s},
+              .total = 3 * luma};
 
     default:
       return {};

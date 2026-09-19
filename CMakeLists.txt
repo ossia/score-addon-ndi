@@ -198,6 +198,16 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     endif()
   endif()
 
+  # Sends UYVA and PA16, which nothing else on the network does. Needs only
+  # the SDK, so it builds wherever the loopback test does.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/AlphaSenderProbe.cpp")
+    add_executable(score_addon_ndi_alpha_sender tests/AlphaSenderProbe.cpp)
+    target_include_directories(score_addon_ndi_alpha_sender
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_alpha_sender PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_features(score_addon_ndi_alpha_sender PRIVATE cxx_std_20)
+  endif()
+
   # A live frame through the real GPU decoder, checked against SMPTE bars.
   # Needs a live source and a QRhi, so it is a tool and not a ctest.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/LiveDecodeProbe.cpp")

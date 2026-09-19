@@ -360,6 +360,14 @@ AVFrame* InputStream::read_frame_impl() noexcept
           // on every frame.
           this->interlacing = interlacing;
           this->deinterlace = m_deinterlace;
+          // UYVA and PA16 have no AVPixelFormat that describes their alpha
+          // plane, so they name themselves here and the decoder factory reads
+          // this before it reads pixel_format.
+          this->native_format
+              = Ndi::receiveLayout(
+                    ndi_frame.FourCC, ndi_frame.line_stride_in_bytes, ndi_frame.yres)
+                    .native;
+          this->pixel_format = AVPixelFormat(res->format);
           this->width = res->width;
           this->height = (interlacing == Video::Interlacing::Fields)
                              ? res->height * 2
