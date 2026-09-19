@@ -7,6 +7,9 @@
 #include <Gfx/GfxDevice.hpp>
 #include <Gfx/SharedInputSettings.hpp>
 
+#include <Ndi/InputSettings.hpp>
+
+#include <QComboBox>
 #include <QLineEdit>
 
 namespace Ndi
@@ -29,6 +32,12 @@ public:
   const Device::DeviceSettings& defaultSettings() const noexcept override;
 
   Device::ProtocolSettingsWidget* makeSettingsWidget() override;
+
+  // Ndi::InputSettings adds a field to the shared struct, so the base class's
+  // serializers would drop it.
+  QVariant makeProtocolSpecificSettings(const VisitorVariant& visitor) const override;
+  void serializeProtocolSpecificSettings(
+      const QVariant& data, const VisitorVariant& visitor) const override;
 };
 
 class InputSettingsWidget final : public Gfx::SharedInputSettingsWidget
@@ -37,6 +46,12 @@ public:
   InputSettingsWidget(QWidget* parent = nullptr);
 
   Device::DeviceSettings getSettings() const override;
+  void setSettings(const Device::DeviceSettings& settings) override;
+
+private:
+  QComboBox* m_colorSpace{};
+  QComboBox* m_receiveFormat{};
+  QComboBox* m_deinterlace{};
 };
 
 }
