@@ -1,5 +1,7 @@
 #include "InputNode.hpp"
 
+#include <Ndi/InputStream.hpp>
+
 #include <State/MessageListSerialization.hpp>
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
@@ -168,45 +170,6 @@ oom:
   return nullptr;
 }
 
-class InputStream final
-    : public QObject
-    , public Video::ExternalInput
-{
-  W_OBJECT(InputStream)
-public:
-  explicit InputStream(const Ndi::Loader& ndi) noexcept;
-  ~InputStream() noexcept;
-  bool load(const std::string& inputDevice) noexcept;
-
-  bool start() noexcept override;
-  void stop() noexcept override;
-
-  AVFrame* dequeue_frame() noexcept override;
-  void release_frame(AVFrame* frame) noexcept override;
-
-  void ptz_changed(bool state) W_SIGNAL(ptz_changed, state)
-
-  Ndi::Receiver& receiver() noexcept { return m_receiver; }
-
-private:
-  void timerEvent(QTimerEvent* t) override;
-  void buffer_thread() noexcept;
-  AVFrame* read_frame_impl() noexcept;
-  std::thread m_thread;
-  Video::FrameQueue m_frames;
-
-  std::atomic_bool m_running{};
-
-  const Ndi::Loader& m_ndi;
-  Ndi::Receiver m_receiver;
-
-public:
-  /// How much of a frame's own colour declaration to believe, and what to ask
-  /// the SDK for. Set before load(); read on the receive thread from then on.
-  Ndi::ColorSpaceSetting m_colorSetting{Ndi::ColorSpaceSetting::Rec709};
-  Ndi::ReceiveFormat m_receiveFormat{Ndi::ReceiveFormat::EightBit};
-  Video::Deinterlace m_deinterlace{Video::Deinterlace::Weave};
-};
 W_OBJECT_IMPL(InputStream)
 
 InputStream::InputStream(const Ndi::Loader& ndi) noexcept
@@ -372,6 +335,8 @@ AVFrame* InputStream::read_frame_impl() noexcept
           this->height = (interlacing == Video::Interlacing::Fields)
                              ? res->height * 2
                              : res->height;
+          if(ndi_frame.frame_rate_D > 0)
+            this->fps = double(ndi_frame.frame_rate_N) / ndi_frame.frame_rate_D;
           return res;
         }
         else

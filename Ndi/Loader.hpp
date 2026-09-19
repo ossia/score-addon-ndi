@@ -22,13 +22,13 @@ namespace Ndi
  * too old, because saying so costs a log line and guessing wrong costs a
  * silently black picture.
  */
-inline bool ndiVersionSupportsHDR(std::string_view version) noexcept
+inline int ndiVersionMajor(std::string_view version) noexcept
 {
   // A runtime that reports a bare "6.2.0.3", with no build banner in front of
   // it, is still a version 6 runtime.
   const auto at = version.find_last_of(' ');
   if(at != std::string_view::npos && at + 1 >= version.size())
-    return false;
+    return 0;
   const auto major
       = (at == std::string_view::npos) ? version : version.substr(at + 1);
 
@@ -39,8 +39,13 @@ inline bool ndiVersionSupportsHDR(std::string_view version) noexcept
   // A version must start with digits and continue with '.' or end there, so a
   // trailing word ("unknown") is not read as version 0.
   if(i == 0 || (i < major.size() && major[i] != '.'))
-    return false;
-  return n >= 6;
+    return 0;
+  return n;
+}
+
+inline bool ndiVersionSupportsHDR(std::string_view version) noexcept
+{
+  return ndiVersionMajor(version) >= 6;
 }
 
 struct Loader
@@ -58,6 +63,10 @@ struct Loader
 
   /// The runtime's version string, as it reported itself.
   const std::string& version() const noexcept { return m_version; }
+
+  /// Where the runtime was loaded from: a soname when the loader path found
+  /// it, an absolute path otherwise.
+  const std::string& path() const noexcept { return m_path; }
 
   /// Whether this runtime can receive HDR at all. An NDI 5 runtime substitutes
   /// a placeholder frame for HDR content and says nothing about it.
@@ -221,6 +230,7 @@ private:
   void* m_ndi_dll{};
   const NDIlib_v5* m_lib{};
   std::string m_version;
+  std::string m_path;
 };
 
 struct Sender

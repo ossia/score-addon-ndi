@@ -11,44 +11,18 @@
 // Every field the dialog owns is checked, not just the path: the same hazard
 // applies to anything else the base class might one day read that way.
 
-#include <core/application/ApplicationInterface.hpp>
-#include <core/application/ApplicationSettings.hpp>
-#include <core/presenter/DocumentManager.hpp>
-
-#include <score/plugins/settingsdelegate/SettingsDelegateModel.hpp>
-
 #include <Ndi/InputFactory.hpp>
 #include <Ndi/NdiColorSpace.hpp>
 
 #include <QApplication>
 
 #include <cstdio>
-#include <memory>
 #include <string>
-#include <vector>
+
+#include "StubApplication.hpp"
 
 namespace
 {
-// The device name field validates as it is typed, and validation asks the skin
-// for its colours, and the skin asks for the application context -- which a
-// bare QApplication does not have, so score::AppContext() binds a null
-// reference and the widget's own constructor segfaults. This is the smallest
-// thing that answers: no plugins, no documents, and gui=false so the skin does
-// not go looking for fonts either.
-struct StubApplication final : score::ApplicationInterface
-{
-  score::ApplicationSettings settings;
-  score::ApplicationComponentsData componentsData;
-  score::ApplicationComponents comps{componentsData};
-  score::DocumentList documents;
-  std::vector<std::unique_ptr<score::SettingsDelegateModel>> settingsModels;
-  score::ApplicationContext ctx{settings, comps, documents, settingsModels};
-
-  StubApplication() { m_instance = this; }
-  const score::ApplicationContext& context() const override { return ctx; }
-  const score::ApplicationComponents& components() const override { return comps; }
-};
-
 int g_fail = 0;
 void check(bool ok, const std::string& what)
 {
@@ -63,8 +37,7 @@ int main(int argc, char** argv)
   std::setvbuf(stdout, nullptr, _IONBF, 0);
   qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication app{argc, argv};
-  StubApplication stub;
-  stub.settings.gui = false;
+  Ndi::Testing::StubApplication stub;
 
   // Not the defaults, in every field: a widget that ignored its argument and
   // kept what its constructor set would otherwise pass.

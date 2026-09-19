@@ -12,8 +12,18 @@
 #include <QComboBox>
 #include <QLineEdit>
 
+#include <memory>
+
+class QLabel;
+class QPushButton;
+class QTimer;
+namespace Gfx
+{
+class CameraPreviewWidget;
+}
 namespace Ndi
 {
+struct Finder;
 
 class InputFactory final : public Gfx::SharedInputProtocolFactory
 {
@@ -44,14 +54,29 @@ class InputSettingsWidget final : public Gfx::SharedInputSettingsWidget
 {
 public:
   InputSettingsWidget(QWidget* parent = nullptr);
+  ~InputSettingsWidget();
 
   Device::DeviceSettings getSettings() const override;
   void setSettings(const Device::DeviceSettings& settings) override;
 
 private:
+  void timerEvent(QTimerEvent* ev) override;
+  void refreshSources();
+  void restartPreview();
+  void updateProperties();
+
+  QComboBox* m_source{};
   QComboBox* m_colorSpace{};
   QComboBox* m_receiveFormat{};
   QComboBox* m_deinterlace{};
+  QPushButton* m_refresh{};
+  Gfx::CameraPreviewWidget* m_preview{};
+  QLabel* m_properties{};
+  QTimer* m_debounce{};
+
+  std::unique_ptr<Ndi::Finder> m_finder;
+  int m_discoveryTimer{};
+  int m_propertiesTimer{};
 };
 
 }

@@ -4,11 +4,23 @@
 
 #include <State/Widgets/AddressFragmentLineEdit.hpp>
 
-#include <QFormLayout>
-#include <QLabel>
+#include <Gfx/Widgets/CameraPreviewWidget.hpp>
 
+#include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QPushButton>
+#include <QTimer>
+#include <QTimerEvent>
+
+#include <Ndi/HxDecoder.hpp>
 #include <Ndi/InputNode.hpp>
+#include <Ndi/InputStream.hpp>
 #include <Ndi/Loader.hpp>
+
+extern "C" {
+#include <libavutil/pixdesc.h>
+}
 
 #include <set>
 namespace Ndi
@@ -125,6 +137,25 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
   m_shmPath->setVisible(false);
   ((QLabel*)m_layout->labelForField(m_shmPath))->setVisible(false);
 
+  // Editable: a source that is not broadcasting yet cannot be discovered, and
+  // the SDK connects to it by name as soon as it appears.
+  m_source = new QComboBox{this};
+  m_source->setEditable(true);
+  m_source->setInsertPolicy(QComboBox::NoInsert);
+  m_source->setMinimumWidth(320);
+  m_source->setToolTip(
+      tr("Pick a source on the network, or type the name of one that is not "
+         "online yet."));
+  m_refresh = new QPushButton{tr("Refresh"), this};
+  {
+    auto* row = new QWidget{this};
+    auto* lay = new QHBoxLayout{row};
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->addWidget(m_source, 1);
+    lay->addWidget(m_refresh);
+    m_layout->addRow(tr("Source"), row);
+  }
+
   // A received frame does not say which matrix it was encoded with, and the
   // three things that could answer disagree -- see Ndi/NdiColorSpace.hpp. The
   // automatic entries differ in which one they believe.
@@ -156,7 +187,128 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
          "with the 16-bit receive format."));
   m_layout->addRow(tr("Deinterlace"), m_deinterlace);
 
+  m_preview = new Gfx::CameraPreviewWidget{this};
+  m_preview->setFixedSize(320, 180);
+  m_layout->addRow(tr("Preview"), m_preview);
+
+  m_properties = new QLabel{this};
+  m_properties->setTextFormat(Qt::PlainText);
+  m_layout->addRow(QString{}, m_properties);
+
+  if(!Ndi::hxDecoderAvailable(Loader::instance()))
+  {
+    auto* warn = new QLabel{
+        tr("NDI|HX sources (phones, PTZ cameras) cannot be decoded: this NDI "
+           "runtime needs FFmpeg %1, which is not installed. Such sources will "
+           "show a \"Video decoder not found\" placeholder. See "
+           "<a href=\"https://ndi.video/formats\">ndi.video/formats</a>.")
+            .arg(hxDecoderLibs(ndiVersionMajor(Loader::instance().version())).avcodec),
+        this};
+    warn->setWordWrap(true);
+    warn->setOpenExternalLinks(true);
+    m_layout->addRow(warn);
+  }
+
+  m_debounce = new QTimer{this};
+  m_debounce->setSingleShot(true);
+  m_debounce->setInterval(400);
+  connect(m_debounce, &QTimer::timeout, this, [this] { restartPreview(); });
+
+  auto queue = [this] { m_debounce->start(); };
+  connect(m_source, &QComboBox::currentTextChanged, this, queue);
+  for(auto* c : {m_colorSpace, m_receiveFormat, m_deinterlace})
+    connect(c, &QComboBox::currentIndexChanged, this, queue);
+  connect(m_refresh, &QPushButton::clicked, this, [this] { refreshSources(); });
+
+  if(Loader::instance().available())
+  {
+    m_finder = std::make_unique<Ndi::Finder>(Loader::instance());
+    m_discoveryTimer = startTimer(1000);
+  }
+  m_propertiesTimer = startTimer(500);
+
   setSettings(InputFactory{}.defaultSettings());
+  refreshSources();
+}
+
+InputSettingsWidget::~InputSettingsWidget() = default;
+
+void InputSettingsWidget::timerEvent(QTimerEvent* ev)
+{
+  if(ev->timerId() == m_discoveryTimer)
+    refreshSources();
+  else if(ev->timerId() == m_propertiesTimer)
+    updateProperties();
+  else
+    SharedInputSettingsWidget::timerEvent(ev);
+}
+
+void InputSettingsWidget::refreshSources()
+{
+  if(!m_finder)
+    return;
+
+  uint32_t n = 0;
+  m_finder->wait_for_sources(0);
+  auto* sources = m_finder->get_current_sources(&n);
+
+  std::set<QString> found;
+  for(uint32_t i = 0; i < n; i++)
+    found.insert(QString::fromUtf8(sources[i].p_ndi_name));
+
+  std::set<QString> listed;
+  for(int i = 0; i < m_source->count(); i++)
+    listed.insert(m_source->itemText(i));
+  if(listed == found)
+    return;
+
+  // Keep whatever is in the edit field: it can name a source that is not on
+  // the network yet, which is the point of being able to type one.
+  const auto typed = m_source->currentText();
+  {
+    QSignalBlocker block{m_source};
+    m_source->clear();
+    for(const auto& s : found)
+      m_source->addItem(s);
+    m_source->setCurrentText(typed);
+  }
+}
+
+void InputSettingsWidget::restartPreview()
+{
+  m_preview->clear();
+
+  const auto source = m_source->currentText();
+  if(source.isEmpty() || !Loader::instance().available())
+    return;
+
+  auto stream = std::make_shared<Ndi::InputStream>(Loader::instance());
+  stream->m_colorSetting = Ndi::colorSpaceSettingFromName(m_colorSpace->currentText());
+  stream->m_receiveFormat = Ndi::receiveFormatFromName(m_receiveFormat->currentText());
+  stream->m_deinterlace = Ndi::deinterlaceFromName(m_deinterlace->currentText());
+  stream->load(source.toStdString());
+
+  m_preview->setInput(std::move(stream));
+}
+
+void InputSettingsWidget::updateProperties()
+{
+  const auto* fmt = m_preview->metadata();
+  if(!fmt || fmt->width <= 0 || fmt->height <= 0)
+  {
+    m_properties->setText(
+        m_source->currentText().isEmpty() ? tr("No source selected")
+                                          : tr("Waiting for the source..."));
+    return;
+  }
+
+  const char* pix = av_get_pix_fmt_name(fmt->pixel_format);
+  QString text = tr("%1x%2").arg(fmt->width).arg(fmt->height);
+  if(pix)
+    text += QStringLiteral(" - %1").arg(pix);
+  if(fmt->fps > 0)
+    text += tr(" - %1 fps").arg(fmt->fps, 0, 'f', 2);
+  m_properties->setText(text);
 }
 
 Device::DeviceSettings InputSettingsWidget::getSettings() const
@@ -165,7 +317,7 @@ Device::DeviceSettings InputSettingsWidget::getSettings() const
   set.protocol = InputFactory::static_concreteKey();
 
   Ndi::InputSettings specif;
-  specif.path = m_shmPath->text();
+  specif.path = m_source->currentText();
   specif.colorSpace = m_colorSpace->currentText();
   specif.receiveFormat = m_receiveFormat->currentText();
   specif.deinterlace = m_deinterlace->currentText();
@@ -182,6 +334,7 @@ void InputSettingsWidget::setSettings(const Device::DeviceSettings& settings)
   // the base widget asked the variant for a SharedInputSettings, got a
   // default-constructed one, and emptied the source name with it.
   m_shmPath->setText(set.path);
+  m_source->setCurrentText(set.path);
 
   // An empty or unknown name resolves to the default rather than to nothing: a
   // device saved before this field existed must still open.
