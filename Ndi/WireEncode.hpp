@@ -6,7 +6,7 @@
  *
  * The GPU side of Ndi/VideoFrameFormat.hpp: that one says what the bytes look
  * like to the SDK, this one says which existing encoder writes them. Nothing
- * converts anything here -- makeWireEncoder maps a neutral VideoPixelFormat to
+ * converts anything here -- makeWireEncoder maps a neutral Video::VideoPixelFormat to
  * the encoder that emits exactly those bytes, and it is the same table the AJA
  * and DeckLink playout paths use, so an NDI frame and an SDI frame of the same
  * format come out byte-identical.
@@ -20,7 +20,7 @@
  */
 
 #include <Gfx/Graph/encoders/WireEncoderFactory.hpp>
-#include <Gfx/Graph/interop/VideoPixelFormat.hpp>
+#include <Video/VideoPixelFormat.hpp>
 #include <Ndi/NdiColorSpace.hpp>
 #include <Ndi/VideoFrameFormat.hpp>
 
@@ -34,8 +34,8 @@ struct NdiEncoding
 {
   /// Unknown means no encoder: the scene texture is already the wire format
   /// (RGBA), and the output node reads it back through InvertYRenderer.
-  score::gfx::interop::VideoPixelFormat gfx{
-      score::gfx::interop::VideoPixelFormat::Unknown};
+  Video::VideoPixelFormat gfx{
+      Video::VideoPixelFormat::Unknown};
 
   /// Render the scene into RGBA16F instead of RGBA8. Only worth it above 8
   /// bits: from an 8-bit scene a 16-bit encoder produces valid bytes whose
@@ -45,7 +45,7 @@ struct NdiEncoding
 
   bool hasEncoder() const noexcept
   {
-    return gfx != score::gfx::interop::VideoPixelFormat::Unknown;
+    return gfx != Video::VideoPixelFormat::Unknown;
   }
 };
 
@@ -53,7 +53,7 @@ struct NdiEncoding
 /// RGBA and for anything this addon cannot send.
 inline NdiEncoding ndiEncoding(std::string_view name) noexcept
 {
-  using F = score::gfx::interop::VideoPixelFormat;
+  using F = Video::VideoPixelFormat;
 
   // RGBA: the scene is already these bytes. RGBX is the same bytes with a hint
   // that the alpha is all 255 -- NDI's own words -- so it is sent the same way.

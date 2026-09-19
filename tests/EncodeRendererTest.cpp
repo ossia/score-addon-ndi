@@ -258,7 +258,7 @@ void runP216Case(RenderState& state, int W, int H)
   auto packed = Ndi::makeNdiEncoder("P216");
   // And the plane-based one, as the reference.
   auto planar = score::gfx::makeWireEncoder(
-      score::gfx::interop::VideoPixelFormat::P216, /* contiguous */ false);
+      Video::VideoPixelFormat::P216, /* contiguous */ false);
   if(!packed || !planar)
   {
     check(false, "both P216 encoders exist");

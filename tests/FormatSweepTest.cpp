@@ -845,11 +845,11 @@ void phase6(RenderState& state)
   struct PlaneDump
   {
     const char* name;
-    score::gfx::interop::VideoPixelFormat fmt;
+    Video::VideoPixelFormat fmt;
     int planes;
   };
-  for(auto pd : {PlaneDump{"P216", score::gfx::interop::VideoPixelFormat::P216, 2},
-                 PlaneDump{"NV12", score::gfx::interop::VideoPixelFormat::NV12, 2}})
+  for(auto pd : {PlaneDump{"P216", Video::VideoPixelFormat::P216, 2},
+                 PlaneDump{"NV12", Video::VideoPixelFormat::NV12, 2}})
   {
     auto& rhi = *state.rhi;
     auto* input = rhi.newTexture(

@@ -175,7 +175,9 @@ bool sampleYuv(
     const NDIlib_video_frame_v2_t& f, const Ndi::ReceiveLayout& L, int x, int y,
     double& Y, double& U, double& V)
 {
-  if(f.FourCC == NDIlib_FourCC_video_type_UYVY)
+  // UYVA's first plane IS a UYVY picture; only the alpha after it differs.
+  if(f.FourCC == NDIlib_FourCC_video_type_UYVY
+     || f.FourCC == NDIlib_FourCC_video_type_UYVA)
   {
     const uint8_t* row = f.p_data + ptrdiff_t(y) * L.stride[0];
     const int pair = (x / 2) * 4;
@@ -184,7 +186,8 @@ bool sampleYuv(
     Y = row[pair + 1 + (x % 2) * 2];
     return true;
   }
-  if(f.FourCC == NDIlib_FourCC_video_type_P216)
+  if(f.FourCC == NDIlib_FourCC_video_type_P216
+     || f.FourCC == NDIlib_FourCC_video_type_PA16)
   {
     const auto* yp = reinterpret_cast<const uint16_t*>(
         f.p_data + L.offset[0] + ptrdiff_t(y) * L.stride[0]);
@@ -357,7 +360,8 @@ void reportBars(const NDIlib_video_frame_v2_t& vf)
 
 void reportMatrix(const NDIlib_video_frame_v2_t& vf)
 {
-  if(vf.FourCC != NDIlib_FourCC_video_type_UYVY)
+  if(vf.FourCC != NDIlib_FourCC_video_type_UYVY
+     && vf.FourCC != NDIlib_FourCC_video_type_UYVA)
   {
     std::printf(
         "    matrix measurement: needs UYVY, got %s -- skipped\n",

@@ -60,6 +60,8 @@ int main()
       check(l.planeCount == 1 && l.offset[0] == 0 && l.stride[0] == s,
             std::string(c.name) + " is one plane at p_data");
       check(l.total == size_t(s) * H, std::string(c.name) + " occupies stride * height");
+      check(l.native == Video::VideoPixelFormat::Unknown,
+            std::string(c.name) + " needs no native override");
     }
   }
 
@@ -70,9 +72,13 @@ int main()
     const int s = strideOf(2);
     const auto l = Ndi::receiveLayout(NDIlib_FourCC_video_type_UYVA, s, H);
     check(l.supported && l.format == AV_PIX_FMT_UYVY422, "UYVA decodes as UYVY");
-    check(l.planeCount == 1, "its alpha is dropped: ffmpeg has no format for it");
+    check(l.planeCount == 2, "the alpha plane is carried, not dropped");
+    check(l.native == Video::VideoPixelFormat::UYVA422A,
+          "and named, since no AVPixelFormat describes this layout");
+    check(l.offset[1] == size_t(s) * H && l.stride[1] == s / 2,
+          "the alpha starts after the UYVY and is one byte per pixel");
     check(l.total == size_t(s) * H + size_t(s / 2) * H,
-          "but the alpha is still counted in total");
+          "total counts both planes");
     check(l.total == size_t(s) * H * 3 / 2, "which is 1.5x the UYVY part, not 2x");
   }
 
@@ -122,9 +128,12 @@ int main()
     check(p216.total == 2 * size_t(s) * H, "two planes' worth");
 
     const auto pa16 = Ndi::receiveLayout(NDIlib_FourCC_video_type_PA16, s, H);
-    check(pa16.format == AV_PIX_FMT_P216LE && pa16.planeCount == 2,
-          "PA16 decodes as P216 with the alpha dropped");
-    check(pa16.total == 3 * size_t(s) * H, "three planes' worth, alpha included");
+    check(pa16.planeCount == 3, "PA16 carries its alpha plane");
+    check(pa16.native == Video::VideoPixelFormat::PA16,
+          "and is named, since P216LE describes only its first two planes");
+    check(pa16.offset[2] == 2 * size_t(s) * H && pa16.stride[2] == s,
+          "the 16-bit alpha is the third plane, full size");
+    check(pa16.total == 3 * size_t(s) * H, "three planes' worth");
   }
 
   std::printf("\n== what must be refused ==\n");
