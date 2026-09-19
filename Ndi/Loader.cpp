@@ -267,21 +267,17 @@ bool hxDecoderAvailable(const Loader& ndi) noexcept
     dir = ndi.path().substr(0, slash + 1);
 
   auto loadable = [&dir](const char* soname) {
-    const std::string_view name{soname};
+    const std::string name{soname};
     const auto dot = name.find(".so.");
-    std::string priv{name.substr(0, dot)};
-    priv += "-ndi";
-    priv += name.substr(dot);
+    const std::string priv = dot == std::string::npos
+                                 ? name
+                                 : name.substr(0, dot) + "-ndi" + name.substr(dot);
 
     // The runtime searches its own directory before the loader path, and
-    // prefers the privately named copy there, so a system whose only usable
+    // prefers the privately named copy in each, so a system whose only usable
     // FFmpeg sits next to libndi still decodes.
-    const std::string candidates[]
-        = {dir + priv, dir + std::string{name}, priv, std::string{name}};
-    for(const auto& candidate : candidates)
+    for(const auto& candidate : {dir + priv, dir + name, priv, name})
     {
-      if(candidate.empty())
-        continue;
       if(void* h = dlopen(candidate.c_str(), RTLD_LOCAL | RTLD_LAZY))
       {
         dlclose(h);
