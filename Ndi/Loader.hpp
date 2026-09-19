@@ -1,10 +1,48 @@
 #pragma once
 #include <string>
+#include <string_view>
 
 #include <Processing.NDI.Lib.h>
 
 namespace Ndi
 {
+
+/**
+ * @brief Whether an NDI runtime version string can carry HDR.
+ *
+ * NDI 5 and older runtimes cannot send or receive HDR content; a placeholder
+ * frame is displayed instead -- SDK Documentation v6.2, section 18.1.1.
+ *
+ * Measured: libndi 5.6.1 returns a flat limited-range-black frame for an HLG
+ * source where 6.2.0.3 returns the picture, and drops the ndi_color_info with
+ * it.
+ *
+ * The string looks like "NDI SDK LINUX 10:39:50 Jun  2 2025 6.2.0.3": the
+ * version is its last space-separated field. Anything unparseable is treated as
+ * too old, because saying so costs a log line and guessing wrong costs a
+ * silently black picture.
+ */
+inline bool ndiVersionSupportsHDR(std::string_view version) noexcept
+{
+  // A runtime that reports a bare "6.2.0.3", with no build banner in front of
+  // it, is still a version 6 runtime.
+  const auto at = version.find_last_of(' ');
+  if(at != std::string_view::npos && at + 1 >= version.size())
+    return false;
+  const auto major
+      = (at == std::string_view::npos) ? version : version.substr(at + 1);
+
+  int n = 0;
+  size_t i = 0;
+  for(; i < major.size() && major[i] >= '0' && major[i] <= '9'; ++i)
+    n = n * 10 + (major[i] - '0');
+  // A version must start with digits and continue with '.' or end there, so a
+  // trailing word ("unknown") is not read as version 0.
+  if(i == 0 || (i < major.size() && major[i] != '.'))
+    return false;
+  return n >= 6;
+}
+
 struct Loader
 {
   static const Loader& instance()
@@ -17,6 +55,13 @@ struct Loader
   ~Loader();
 
   bool available() const noexcept { return bool(m_lib); }
+
+  /// The runtime's version string, as it reported itself.
+  const std::string& version() const noexcept { return m_version; }
+
+  /// Whether this runtime can receive HDR at all. An NDI 5 runtime substitutes
+  /// a placeholder frame for HDR content and says nothing about it.
+  bool supportsHDR() const noexcept;
 
   // Send API
   auto send_create() const noexcept { return m_lib->send_create(nullptr); }
@@ -175,6 +220,7 @@ struct Loader
 private:
   void* m_ndi_dll{};
   const NDIlib_v5* m_lib{};
+  std::string m_version;
 };
 
 struct Sender
