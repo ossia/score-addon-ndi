@@ -415,11 +415,14 @@ int main(int argc, char** argv)
           for(int i = 0; i < L.planeCount; i++)
             std::printf(" %d", L.stride[i]);
           std::printf(
-              " | interlacing %s parity %s\n",
+              " | interlacing %s%s\n",
               ff.interlacing == Video::Interlacing::Fields   ? "Fields"
               : ff.interlacing == Video::Interlacing::Woven  ? "Woven"
                                                              : "None",
-              ff.topField ? "field_0" : "field_1");
+              // Parity only means something for a half-height field.
+              ff.interlacing != Video::Interlacing::Fields ? ""
+              : ff.topField                                ? ", parity field_0"
+                                                           : ", parity field_1");
 
           // The primary stride the SDK reports must be at least the tight row
           // the layout assumes, or every plane after the first is misplaced.
