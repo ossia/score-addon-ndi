@@ -20,6 +20,8 @@
 //        [--fields] allow the source to deliver fields rather than frames
 
 #include <Ndi/ColorInfo.hpp>
+#include <Ndi/FrameFormat.hpp>
+#include <Ndi/ReceiveLayout.hpp>
 #include <Ndi/NdiColorSpace.hpp>
 
 #include <Processing.NDI.Lib.h>
@@ -399,6 +401,51 @@ int main(int argc, char** argv)
             ci.matrix ? Ndi::ndiYuvStandardName(*ci.matrix) : "-",
             ci.transfer ? "set" : "-", ci.primaries ? "set" : "-");
         reportMatrix(vf);
+
+        // What the addon would make of this exact frame. Ndi::receiveLayout
+        // and Ndi::decodeFrameFormat are unit-tested against a table; this is
+        // the same pair asked about bytes a real sender produced.
+        {
+          const auto L = Ndi::receiveLayout(
+              vf.FourCC, vf.line_stride_in_bytes, vf.yres);
+          const auto ff = Ndi::decodeFrameFormat(vf.frame_format_type);
+          std::printf(
+              "    layout: %s, %d plane(s), total %zu B, strides",
+              L.supported ? "supported" : "UNSUPPORTED", L.planeCount, L.total);
+          for(int i = 0; i < L.planeCount; i++)
+            std::printf(" %d", L.stride[i]);
+          std::printf(
+              " | interlacing %s parity %s\n",
+              ff.interlacing == Video::Interlacing::Fields   ? "Fields"
+              : ff.interlacing == Video::Interlacing::Woven  ? "Woven"
+                                                             : "None",
+              ff.topField ? "field_0" : "field_1");
+
+          // The primary stride the SDK reports must be at least the tight row
+          // the layout assumes, or every plane after the first is misplaced.
+          if(L.supported && vf.line_stride_in_bytes < L.stride[0])
+            std::printf("    !! stride %d is below the layout's %d\n",
+                        vf.line_stride_in_bytes, L.stride[0]);
+
+          // Read one sample from each plane at the offsets the layout gives.
+          // A wrong chroma offset reads luma as chroma, which shows up as a
+          // wildly off-neutral value on a test pattern.
+          if(L.supported && L.planeCount >= 2 && vf.p_data)
+          {
+            const int mid = vf.yres / 2;
+            if(vf.FourCC == NDIlib_FourCC_video_type_P216)
+            {
+              const auto* y = reinterpret_cast<const uint16_t*>(
+                  vf.p_data + L.offset[0] + size_t(mid) * L.stride[0]);
+              const auto* uv = reinterpret_cast<const uint16_t*>(
+                  vf.p_data + L.offset[1] + size_t(mid) * L.stride[1]);
+              std::printf(
+                  "    mid row via layout: Y=%u Cb=%u Cr=%u (8-bit %u %u %u)\n",
+                  y[0], uv[0], uv[1], y[0] / 257, uv[0] / 257, uv[1] / 257);
+            }
+          }
+        }
+
       }
       g_ndi->recv_free_video_v2(recv, &vf);
     }
