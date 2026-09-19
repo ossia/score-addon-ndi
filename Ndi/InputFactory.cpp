@@ -215,6 +215,11 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
   connect(m_debounce, &QTimer::timeout, this, [this] { restartPreview(); });
 
   auto queue = [this] { m_debounce->start(); };
+  // The hidden path field is what the base class serializes from; keep it
+  // equal to the source rather than leaving a stale value behind it.
+  connect(m_source, &QComboBox::currentTextChanged, this, [this](const QString& t) {
+    m_shmPath->setText(t);
+  });
   connect(m_source, &QComboBox::currentTextChanged, this, queue);
   for(auto* c : {m_colorSpace, m_receiveFormat, m_deinterlace})
     connect(c, &QComboBox::currentIndexChanged, this, queue);
@@ -262,15 +267,20 @@ void InputSettingsWidget::refreshSources()
   if(listed == found)
     return;
 
-  // Keep whatever is in the edit field: it can name a source that is not on
-  // the network yet, which is the point of being able to type one.
+  // Keep whatever is in the edit field, and where the caret was in it: this
+  // fires on a timer, and a source appearing or leaving must not disturb
+  // someone halfway through typing the name of one that is still offline.
+  auto* edit = m_source->lineEdit();
   const auto typed = m_source->currentText();
+  const int caret = edit ? edit->cursorPosition() : 0;
   {
     QSignalBlocker block{m_source};
     m_source->clear();
     for(const auto& s : found)
       m_source->addItem(s);
     m_source->setCurrentText(typed);
+    if(edit)
+      edit->setCursorPosition(caret);
   }
 }
 
