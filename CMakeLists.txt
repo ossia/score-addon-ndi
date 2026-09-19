@@ -22,10 +22,16 @@ score_common_setup()
 add_library(score_addon_ndi
   Ndi/InputNode.hpp
   Ndi/InputFactory.hpp
+  Ndi/InputSettings.hpp
+  Ndi/ColorInfo.hpp
   Ndi/OutputNode.hpp
   Ndi/OutputFactory.hpp
   Ndi/Loader.hpp
+  Ndi/NdiColorSpace.hpp
   Ndi/ReadbackPool.hpp
+  Ndi/WireEncode.hpp
+  Ndi/WireEncodeRenderer.hpp
+  Ndi/VideoFrameFormat.hpp
 
   Ndi/InputNode.cpp
   Ndi/InputFactory.cpp
@@ -56,13 +62,40 @@ setup_score_plugin(score_addon_ndi)
 if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.cpp")
   add_executable(score_addon_ndi_pixel_format_test tests/PixelFormatTest.cpp)
   target_include_directories(score_addon_ndi_pixel_format_test
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
-  target_link_libraries(score_addon_ndi_pixel_format_test PRIVATE)
+    PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include"
+      $<TARGET_PROPERTY:score_plugin_gfx,INTERFACE_INCLUDE_DIRECTORIES>)
+  # score_plugin_media as well as gfx: Ndi/InputSettings.hpp reaches
+  # Video/VideoEnums.hpp for Interlacing/Deinterlace, which lives there. With
+  # only Qt::Core this target stopped compiling, and nothing noticed because
+  # building "ossia-score score_addon_ndi" does not build the tests.
+  target_link_libraries(score_addon_ndi_pixel_format_test
+    PRIVATE ${QT_PREFIX}::Core score_plugin_gfx score_plugin_media)
   target_compile_features(score_addon_ndi_pixel_format_test PRIVATE cxx_std_20)
 
   if(COMMAND add_test)
     add_test(NAME score_addon_ndi_pixel_format
              COMMAND score_addon_ndi_pixel_format_test)
+  endif()
+
+  # NDI fixes the YUV standard by resolution and signals it nowhere, so the
+  # sender has to derive it the same way the receiver will. That rule is a pure
+  # function of two integers and the shader it selects is a string, so this
+  # needs no GPU, no NDI runtime and no score -- only the Gfx headers that
+  # generate the matrices, and Qt for QString. The GPU side is the encode
+  # renderer test below.
+  add_executable(score_addon_ndi_color_space_rule_test tests/ColorSpaceRuleTest.cpp)
+  target_include_directories(score_addon_ndi_color_space_rule_test
+    PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}"
+      $<TARGET_PROPERTY:score_plugin_gfx,INTERFACE_INCLUDE_DIRECTORIES>)
+  target_link_libraries(score_addon_ndi_color_space_rule_test
+    PRIVATE ${QT_PREFIX}::Core avutil)
+  target_compile_features(score_addon_ndi_color_space_rule_test PRIVATE cxx_std_20)
+
+  if(COMMAND add_test)
+    add_test(NAME score_addon_ndi_color_space_rule
+             COMMAND score_addon_ndi_color_space_rule_test)
   endif()
 
   # NOTE ON RED TESTS. Three of the tests below are RED ON PURPOSE against
@@ -116,7 +149,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     set_tests_properties(score_addon_ndi_send_path_bench PROPERTIES TIMEOUT 300)
   endif()
 
-  # GPU check for the UYVY path: runs UyvyEncodeRenderer's exact sequence against
+  # GPU check for the encoded paths: runs WireEncodeRenderer's exact sequence against
   # a real QRhi. Needs a GL-capable display, so it is labelled "gui" like score's
   # other display-dependent tests and exits 77 when there is no QRhi.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/EncodeRendererTest.cpp")
@@ -132,6 +165,56 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
                COMMAND score_addon_ndi_encode_renderer_test)
       set_tests_properties(score_addon_ndi_encode_renderer PROPERTIES
         SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui")
+    endif()
+  endif()
+
+  # The frame_format_type decision, including the interleaved case that used to
+  # silently drop every frame of an interlaced source. Pure: no SDK, no GPU.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FrameFormatTest.cpp")
+    add_executable(score_addon_ndi_frame_format_test tests/FrameFormatTest.cpp)
+    target_include_directories(score_addon_ndi_frame_format_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_frame_format_test PRIVATE score_plugin_gfx score_plugin_media)
+    target_compile_features(score_addon_ndi_frame_format_test PRIVATE cxx_std_20)
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_frame_format
+               COMMAND score_addon_ndi_frame_format_test)
+      set_tests_properties(score_addon_ndi_frame_format PROPERTIES LABELS "ndi")
+    endif()
+  endif()
+
+  # Asks real senders on the network what they actually transmit, and measures
+  # the YUV matrix from their pixels rather than believing their metadata. Not a
+  # ctest: it needs live sources, so it is a tool run by hand.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/LiveSourceProbe.cpp")
+    add_executable(score_addon_ndi_live_source_probe tests/LiveSourceProbe.cpp)
+    target_include_directories(score_addon_ndi_live_source_probe
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_live_source_probe
+      PRIVATE score_plugin_gfx ${CMAKE_DL_LIBS} avutil)
+    target_compile_features(score_addon_ndi_live_source_probe PRIVATE cxx_std_20)
+  endif()
+
+  # Exhaustive resolution x format sweep. Unlike the loopback test this dlopen()s
+  # the runtime instead of linking it, because libndi.so.5 and
+  # libndi.so.6 have different sonames and a linked binary can only ever exercise
+  # the one it was built against -- and the two differ on the receive side, which
+  # is exactly what Phase 3 measures. Pass the .so as argv[1].
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FormatSweepTest.cpp")
+    add_executable(score_addon_ndi_format_sweep_test tests/FormatSweepTest.cpp)
+    target_include_directories(score_addon_ndi_format_sweep_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_format_sweep_test
+      PRIVATE score_plugin_gfx score_plugin_media ${QT_PREFIX}::Gui ${CMAKE_DL_LIBS})
+    target_compile_features(score_addon_ndi_format_sweep_test PRIVATE cxx_std_20)
+
+    if(COMMAND add_test)
+      # Phases 1 and 4 need no runtime; the ctest entry runs those. The SDK
+      # phases are driven by hand against each runtime in turn.
+      add_test(NAME score_addon_ndi_format_sweep
+               COMMAND score_addon_ndi_format_sweep_test --phases=14)
+      set_tests_properties(score_addon_ndi_format_sweep PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 900 RUN_SERIAL TRUE LABELS "ndi;gui")
     endif()
   endif()
 
