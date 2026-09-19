@@ -568,6 +568,10 @@ int main(int argc, char** argv)
 // None of that is wanted here. What the test needs from Qt is a GUI
 // application so createRenderState() can make a context, and nothing else.
   QApplication app(argc, argv);
+  // QApplication calls setlocale(LC_ALL, "") on X11, so the C locale set above
+  // is undone by the time anything prints: numbers come out with whatever
+  // decimal separator the session uses.
+  std::setlocale(LC_ALL, "C");
 
   QMetaObject::invokeMethod(
       &app,

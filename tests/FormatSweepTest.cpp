@@ -1080,6 +1080,95 @@ void phase8(RenderState& state)
   }
 }
 
+// ------------------------------------------------------------------- Phase 9
+//
+// The send path against the same published reference the receive path is
+// measured against: 75% SMPTE bars, encoded through every wire format, sent
+// through the SDK, and compared with the values the standard specifies rather
+// than with whatever this program generated.
+void phase9(RenderState& state)
+{
+  std::printf("\n================ Phase 9: send vs the SMPTE reference =======\n");
+  if(!g_ndi)
+  {
+    std::printf("  no NDI runtime: skipped\n");
+    return;
+  }
+  const int W = 1920, H = 1080;
+  constexpr int L = 191;  // 75% of full scale
+  const int bar[7][3] = {{L, L, L}, {L, L, 0}, {0, L, L}, {0, L, 0},
+                         {L, 0, L}, {L, 0, 0}, {0, 0, L}};
+  const char* barName[7]
+      = {"white", "yellow", "cyan", "green", "magenta", "red", "blue"};
+
+  std::vector<uint8_t> rgba(size_t(W) * H * 4);
+  for(int y = 0; y < H; y++)
+    for(int x = 0; x < W; x++)
+    {
+      const int b = std::min(6, x * 7 / W);
+      uint8_t* q = rgba.data() + (size_t(y) * W + x) * 4;
+      q[0] = uint8_t(bar[b][0]);
+      q[1] = uint8_t(bar[b][1]);
+      q[2] = uint8_t(bar[b][2]);
+      q[3] = 255;
+    }
+
+  std::printf("  %-6s %12s %10s\n", "fmt", "mean |err|", "worst bar");
+  for(const auto& f : Ndi::wireFormats)
+  {
+    const std::string format{f.name};
+    auto enc
+        = encodeOnGpu(state, format, W, H, Ndi::ColorSpaceSetting::Rec709, rgba);
+    if(!enc.ok)
+      continue;
+    NDIlib_video_frame_v2_t frame{};
+    if(!Ndi::describeVideoFrame(
+           format, enc.framestore.data(), W, H, enc.stride, frame))
+      continue;
+    frame.frame_rate_N = 60000;
+    frame.frame_rate_D = 1000;
+
+    auto sdk = openPair(("smpte-" + format).c_str());
+    if(!sdk.ok)
+      continue;
+    NDIlib_video_frame_v2_t got{};
+    if(!roundTrip(sdk, frame, W, H, got))
+    {
+      closePair(sdk);
+      check(false, format + " round trips the SMPTE reference");
+      continue;
+    }
+
+    double sum = 0;
+    double worst = 0;
+    int worstBar = 0;
+    for(int i = 0; i < 7; i++)
+    {
+      const int x = W * i / 7 + W / 14;
+      const auto c = receivedAt(got, std::min(x, W - 1), H / 2);
+      const double e = std::abs(c.r - bar[i][0]) + std::abs(c.g - bar[i][1])
+                       + std::abs(c.b - bar[i][2]);
+      sum += e;
+      if(e > worst)
+      {
+        worst = e;
+        worstBar = i;
+      }
+    }
+    const double mean = sum / (7 * 3);
+    std::printf(
+        "  %-6s %12.2f %10s\n", format.c_str(), mean, barName[worstBar]);
+    // 4:2:0 loses more at a bar edge than 4:2:2 does, but a bar CENTRE is far
+    // from any edge; anything above this is a matrix or a layout fault, not
+    // subsampling.
+    check(mean < 6.0, format + ": SMPTE bars survive the round trip (mean "
+                          + std::to_string(mean) + ")");
+
+    g_ndi->recv_free_video_v2(sdk.recv, &got);
+    closePair(sdk);
+  }
+}
+
 }
 
 // ===================================================================== driver
@@ -1114,6 +1203,8 @@ void runAll(const std::string& phases)
     phase7(*state);
   if(phases.find('8') != std::string::npos)
     phase8(*state);
+  if(phases.find('9') != std::string::npos)
+    phase9(*state);
   // Phase 5 (packed 4:2:0 == planes) moved to score's own EncoderTester: the
   // encoders are score::gfx's, used by every consumer that asks for a
   // contiguous framestore, so the gate belongs there and not behind an NDI
@@ -1181,6 +1272,10 @@ int main(int argc, char** argv)
 // None of that is wanted here. What the test needs from Qt is a GUI
 // application so createRenderState() can make a context, and nothing else.
   QApplication app(argc, argv);
+  // QApplication calls setlocale(LC_ALL, "") on X11, so the C locale set above
+  // is undone by the time anything prints: numbers come out with whatever
+  // decimal separator the session uses.
+  std::setlocale(LC_ALL, "C");
 
   QMetaObject::invokeMethod(
       &app,
