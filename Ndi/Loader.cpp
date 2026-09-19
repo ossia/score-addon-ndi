@@ -88,27 +88,85 @@ Loader::Loader()
     return;
   }
 #else
-  for(auto ndi_name : {"libndi.so.8", "libndi.so.7", "libndi.so.6", "libndi.so.5"})
+  // Newest first, everywhere we look. The version matters: a v5 runtime cannot
+  // receive HDR at all and substitutes a placeholder frame for it, silently.
+  static constexpr auto sonames
+      = {"libndi.so.8", "libndi.so.7", "libndi.so.6", "libndi.so.5"};
+
+  // The environment's folder, if it named one.
+  //
+  // This loop used to assign ndi_path only when ndi_folder was set, so without
+  // one it dlopen()ed NDILIB_LIBRARY_NAME four times over -- the soname
+  // preference did nothing, and the search fell to whatever version the
+  // bundled header happened to name. On a machine with both runtimes installed
+  // that is how score ended up on v5 with an SDK 6 sitting in /opt.
+  if(ndi_folder)
   {
-    if(ndi_folder)
+    for(auto ndi_name : sonames)
     {
       ndi_path = ndi_folder + "/"s + ndi_name;
+      m_ndi_dll = dlopen(ndi_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+      if(m_ndi_dll)
+      {
+        ossia::logger().info("Found NDI: {}", ndi_path);
+        break;
+      }
     }
-    m_ndi_dll = dlopen(ndi_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
-    if(m_ndi_dll)
+  }
+
+  // The SDK's own install directories, before the bare soname. An NDI SDK
+  // unpacked in /opt is not on the loader path, so dlopen("libndi.so.6") fails
+  // by name and the search below lands on whatever older runtime the
+  // distribution happens to ship -- silently. That costs more than it sounds:
+  // a v5 runtime cannot receive HDR at all, and hands over a placeholder frame
+  // instead, with no error anywhere.
+  if(!m_ndi_dll)
+  {
+    static constexpr auto sdk_dirs = {
+        "/opt/sdk/ndi/lib/x86_64-linux-gnu",
+        "/opt/sdk/ndi/lib/aarch64-rpi4-linux-gnueabi",
+        "/usr/local/lib",
+        "/Library/NDI SDK for Apple/lib/macOS",
+    };
+    for(auto dir : sdk_dirs)
     {
-      ossia::logger().info("Found NDI: {}", ndi_path);
-      break;
+      for(auto ndi_name : sonames)
+      {
+        const auto candidate = dir + "/"s + ndi_name;
+        if((m_ndi_dll = dlopen(candidate.c_str(), RTLD_LOCAL | RTLD_LAZY)))
+        {
+          ndi_path = candidate;
+          ossia::logger().info("Found NDI: {}", candidate);
+          break;
+        }
+      }
+      if(m_ndi_dll)
+        break;
+    }
+  }
+
+  // By bare soname, for a runtime the dynamic loader already knows about, then
+  // the name the bundled header was built against, then the unversioned link.
+  if(!m_ndi_dll)
+  {
+    for(auto ndi_name : sonames)
+    {
+      if((m_ndi_dll = dlopen(ndi_name, RTLD_LOCAL | RTLD_LAZY)))
+      {
+        ndi_path = ndi_name;
+        ossia::logger().info("Found NDI: {}", ndi_name);
+        break;
+      }
     }
   }
 
   if(!m_ndi_dll)
   {
-    for(auto ndi_name :
-        {"libndi.so.8", "libndi.so.7", "libndi.so.6", "libndi.so.5", "libndi.so"})
+    for(auto ndi_name : {NDILIB_LIBRARY_NAME, "libndi.so"})
     {
       if((m_ndi_dll = dlopen(ndi_name, RTLD_LOCAL | RTLD_LAZY)))
       {
+        ndi_path = ndi_name;
         ossia::logger().info("Found NDI: {}", ndi_name);
         break;
       }
@@ -151,7 +209,26 @@ Loader::Loader()
       m_lib->destroy();
       m_lib = nullptr;
     }
+    else if(const char* v = m_lib->version())
+    {
+      // Which runtime we ended up on, every time. "NDI is installed but score
+      // found an older one first" is otherwise a diagnosis nobody can make from
+      // the outside: the symptom is a black or frozen picture on HDR sources
+      // and nothing at all in the log.
+      m_version = v;
+      ossia::logger().info("NDI runtime: {}", v);
+      if(!supportsHDR())
+        ossia::logger().info(
+            "NDI runtime is older than version 6: HDR sources will arrive as a "
+            "placeholder frame. Set NDI_RUNTIME_DIR_V6 to an SDK 6 runtime to "
+            "receive them.");
+    }
   }
+}
+
+bool Loader::supportsHDR() const noexcept
+{
+  return ndiVersionSupportsHDR(m_version);
 }
 
 Loader::~Loader()
