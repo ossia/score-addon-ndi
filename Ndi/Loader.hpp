@@ -3,6 +3,7 @@
 #include <string_view>
 
 #include <Processing.NDI.Lib.h>
+#include <score_addon_ndi_export.h>
 
 namespace Ndi
 {
@@ -48,7 +49,7 @@ inline bool ndiVersionSupportsHDR(std::string_view version) noexcept
   return ndiVersionMajor(version) >= 6;
 }
 
-struct Loader
+struct SCORE_ADDON_NDI_EXPORT Loader
 {
   static const Loader& instance()
   {
