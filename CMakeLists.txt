@@ -142,15 +142,24 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
 
   # Per-frame cost of the send path. Not a pass/fail test of anything but its own
   # invariants -- it is there to be read.
-  add_executable(score_addon_ndi_send_path_bench tests/SendPathBench.cpp)
-  target_include_directories(score_addon_ndi_send_path_bench
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
-  target_link_libraries(score_addon_ndi_send_path_bench PRIVATE avutil swscale Qt6::Core)
-  target_compile_features(score_addon_ndi_send_path_bench PRIVATE cxx_std_20)
-  if(COMMAND add_test)
-    add_test(NAME score_addon_ndi_send_path_bench
-             COMMAND score_addon_ndi_send_path_bench)
-    set_tests_properties(score_addon_ndi_send_path_bench PROPERTIES TIMEOUT 300)
+  #
+  # Not built under a sanitizer that replaces the allocator (ASan, TSan, MSan,
+  # LSan): the bench defines its own global operator new/delete to count
+  # allocations, which clashes with the sanitizer runtime's (duplicate symbols
+  # at link time under TSan), and it measures Qt's allocations through glibc's
+  # mallinfo2(), which the sanitizer's allocator bypasses, so its controls read
+  # zero and it fails. UBSan alone is fine.
+  if(NOT CMAKE_CXX_FLAGS MATCHES "sanitize=[^ ]*(address|thread|memory|leak)")
+    add_executable(score_addon_ndi_send_path_bench tests/SendPathBench.cpp)
+    target_include_directories(score_addon_ndi_send_path_bench
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_send_path_bench PRIVATE avutil swscale Qt6::Core)
+    target_compile_features(score_addon_ndi_send_path_bench PRIVATE cxx_std_20)
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_send_path_bench
+               COMMAND score_addon_ndi_send_path_bench)
+      set_tests_properties(score_addon_ndi_send_path_bench PROPERTIES TIMEOUT 300)
+    endif()
   endif()
 
   # GPU check for the encoded paths: runs WireEncodeRenderer's exact sequence against
