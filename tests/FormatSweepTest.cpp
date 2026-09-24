@@ -1264,6 +1264,11 @@ void runAll(const std::string& phases)
   // encoders are score::gfx's, used by every consumer that asks for a
   // contiguous framestore, so the gate belongs there and not behind an NDI
   // test somebody has to know to run.
+
+  // The shared_ptr only frees the RenderState struct: the QRhi, its surface and
+  // everything the backend still holds are released by destroy(), which the
+  // caller must invoke.
+  state->destroy();
 }
 }
 

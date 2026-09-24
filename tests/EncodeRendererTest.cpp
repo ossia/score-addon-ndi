@@ -541,6 +541,11 @@ void runTests()
   {
     check(false, "I420 and YV12 both produced a framestore");
   }
+
+  // The shared_ptr only frees the RenderState struct: the QRhi, its surface and
+  // everything the backend still holds are released by destroy(), which the
+  // caller must invoke.
+  state->destroy();
 }
 }
 
