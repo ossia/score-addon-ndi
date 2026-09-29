@@ -177,7 +177,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
       add_test(NAME score_addon_ndi_encode_renderer
                COMMAND score_addon_ndi_encode_renderer_test)
       set_tests_properties(score_addon_ndi_encode_renderer PROPERTIES
-        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui")
+        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui;gpu")
     endif()
   endif()
 
@@ -207,7 +207,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     if(COMMAND add_test)
       add_test(NAME score_addon_ndi_preview COMMAND score_addon_ndi_preview_test)
       set_tests_properties(score_addon_ndi_preview PROPERTIES
-        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui")
+        SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui;gpu")
     endif()
   endif()
 
@@ -294,7 +294,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
       add_test(NAME score_addon_ndi_format_sweep
                COMMAND score_addon_ndi_format_sweep_test --phases=14)
       set_tests_properties(score_addon_ndi_format_sweep PROPERTIES
-        SKIP_RETURN_CODE 77 TIMEOUT 900 RUN_SERIAL TRUE LABELS "ndi;gui")
+        SKIP_RETURN_CODE 77 TIMEOUT 900 RUN_SERIAL TRUE LABELS "ndi;gui;gpu")
     endif()
   endif()
 
