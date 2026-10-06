@@ -171,10 +171,9 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
   for(auto f : Ndi::receiveFormats)
     m_receiveFormat->addItem(Ndi::receiveFormatName(f));
   m_receiveFormat->setToolTip(
-      tr("8-bit: the SDK de-interlaces and hands over progressive frames.\n"
-         "Best available: 16-bit where the source has it, but interlaced "
-         "sources then arrive as individual fields, which score de-interlaces "
-         "itself."));
+      tr("8-bit: progressive frames, de-interlaced by the SDK.\n"
+         "Best available: 16-bit where the source has it; interlaced sources "
+         "then arrive as fields, de-interlaced by score."));
   m_layout->addRow(tr("Receive format"), m_receiveFormat);
 
   // Only reachable through the 16-bit format, which is the only one that
@@ -198,14 +197,11 @@ InputSettingsWidget::InputSettingsWidget(QWidget* parent)
   if(!Ndi::hxDecoderAvailable(Loader::instance()))
   {
     auto* warn = new QLabel{
-        tr("NDI|HX sources (phones, PTZ cameras) cannot be decoded: this NDI "
-           "runtime needs FFmpeg %1, which is not installed. Such sources will "
-           "show a \"Video decoder not found\" placeholder. See "
-           "<a href=\"https://ndi.video/formats\">ndi.video/formats</a> and <a href=\"https://github.com/DistroAV/DistroAV/issues/1034\">https://github.com/DistroAV/DistroAV/issues/1034</a>.")
+        tr("NDI|HX sources cannot be decoded: this NDI runtime needs FFmpeg %1, "
+           "which is not installed.")
             .arg(hxDecoderLibs(ndiVersionMajor(Loader::instance().version())).avcodec),
         this};
     warn->setWordWrap(true);
-    warn->setOpenExternalLinks(true);
     m_layout->addRow(warn);
   }
 
