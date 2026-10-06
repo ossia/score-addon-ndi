@@ -57,6 +57,10 @@ target_link_libraries(score_addon_ndi
 )
 
 # Target-specific options
+if(COMMAND score_register_license)
+  score_register_license("NDI SDK headers" URL "https://ndi.video" NOTICES "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include/Processing.NDI.Lib.h")
+endif()
+
 setup_score_plugin(score_addon_ndi)
 
 # --- tests --------------------------------------------------------------------
