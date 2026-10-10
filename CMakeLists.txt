@@ -119,14 +119,17 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   #
   # The ownership state machine needs no GPU and no SDK either, so the same
   # applies. It interposes pthread_cond_wait to place the sender thread in the
-  # window where requestStop()'s notify can be dropped, hence the dl link.
-  add_executable(score_addon_ndi_readback_pool_test tests/ReadbackPoolTest.cpp)
-  target_include_directories(score_addon_ndi_readback_pool_test
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(score_addon_ndi_readback_pool_test PRIVATE ${CMAKE_DL_LIBS})
-  target_compile_features(score_addon_ndi_readback_pool_test PRIVATE cxx_std_20)
-  find_package(Threads REQUIRED)
-  target_link_libraries(score_addon_ndi_readback_pool_test PRIVATE Threads::Threads)
+  # window where requestStop()'s notify can be dropped, hence the dl link (POSIX
+  # only: dlsym(RTLD_NEXT) over pthread).
+  if(NOT WIN32)
+    add_executable(score_addon_ndi_readback_pool_test tests/ReadbackPoolTest.cpp)
+    target_include_directories(score_addon_ndi_readback_pool_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(score_addon_ndi_readback_pool_test PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_features(score_addon_ndi_readback_pool_test PRIVATE cxx_std_20)
+    find_package(Threads REQUIRED)
+    target_link_libraries(score_addon_ndi_readback_pool_test PRIVATE Threads::Threads)
+  endif()
 
   # Adversarial inputs to the frame description. Some of the overruns it finds are
   # only visible under -fsanitize=address; the test says so where that is the case.
@@ -137,9 +140,11 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   target_compile_features(score_addon_ndi_frame_description_test PRIVATE cxx_std_20)
 
   if(COMMAND add_test)
-    add_test(NAME score_addon_ndi_readback_pool
-             COMMAND score_addon_ndi_readback_pool_test)
-    set_tests_properties(score_addon_ndi_readback_pool PROPERTIES TIMEOUT 300)
+    if(TARGET score_addon_ndi_readback_pool_test)
+      add_test(NAME score_addon_ndi_readback_pool
+               COMMAND score_addon_ndi_readback_pool_test)
+      set_tests_properties(score_addon_ndi_readback_pool PROPERTIES TIMEOUT 300)
+    endif()
     add_test(NAME score_addon_ndi_frame_description
              COMMAND score_addon_ndi_frame_description_test)
   endif()
@@ -152,8 +157,9 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   # allocations, which clashes with the sanitizer runtime's (duplicate symbols
   # at link time under TSan), and it measures Qt's allocations through glibc's
   # mallinfo2(), which the sanitizer's allocator bypasses, so its controls read
-  # zero and it fails. UBSan alone is fine.
-  if(NOT CMAKE_CXX_FLAGS MATCHES "sanitize=[^ ]*(address|thread|memory|leak)")
+  # zero and it fails. UBSan alone is fine. mallinfo2() also limits it to glibc.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     AND NOT CMAKE_CXX_FLAGS MATCHES "sanitize=[^ ]*(address|thread|memory|leak)")
     add_executable(score_addon_ndi_send_path_bench tests/SendPathBench.cpp)
     target_include_directories(score_addon_ndi_send_path_bench
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
@@ -283,8 +289,8 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   # the runtime instead of linking it, because libndi.so.5 and
   # libndi.so.6 have different sonames and a linked binary can only ever exercise
   # the one it was built against -- and the two differ on the receive side, which
-  # is exactly what Phase 3 measures. Pass the .so as argv[1].
-  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FormatSweepTest.cpp")
+  # is exactly what Phase 3 measures. Pass the .so as argv[1]. dlopen: not on Windows.
+  if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/FormatSweepTest.cpp")
     add_executable(score_addon_ndi_format_sweep_test tests/FormatSweepTest.cpp)
     target_include_directories(score_addon_ndi_format_sweep_test
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
