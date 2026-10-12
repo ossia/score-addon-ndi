@@ -222,7 +222,7 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
   endif()
 
   # The settings dialog's round trip, which is where a device's source name was
-  # being dropped. Needs the widgets, so it runs on the offscreen platform.
+  # being dropped. Needs the widgets.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/SettingsRoundTripTest.cpp")
     add_executable(score_addon_ndi_settings_round_trip_test tests/SettingsRoundTripTest.cpp)
     target_include_directories(score_addon_ndi_settings_round_trip_test

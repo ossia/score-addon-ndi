@@ -35,7 +35,6 @@ void check(bool ok, const std::string& what)
 int main(int argc, char** argv)
 {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
-  qputenv("QT_QPA_PLATFORM", "offscreen");
   QApplication app{argc, argv};
   Ndi::Testing::StubApplication stub;
 
