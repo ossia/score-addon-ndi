@@ -53,8 +53,12 @@ target_include_directories(score_addon_ndi PRIVATE 3rdparty/NDI/include)
 target_link_libraries(score_addon_ndi
   PUBLIC
     score_plugin_engine score_plugin_media score_plugin_gfx
-    avformat avutil swscale
 )
+if(TARGET avutil)
+  target_link_libraries(score_addon_ndi PUBLIC avformat avutil swscale)
+elseif(OSSIA_SDK AND EXISTS "${OSSIA_SDK}/ffmpeg/lib/libavutil.a")
+  target_link_libraries(score_addon_ndi PRIVATE "${OSSIA_SDK}/ffmpeg/lib/libavutil.a")
+endif()
 
 # Target-specific options
 if(COMMAND score_register_license)
