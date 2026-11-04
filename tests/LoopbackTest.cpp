@@ -179,16 +179,17 @@ int main()
     }
     if(fmt == "P216")
     {
-      // 16-bit: the 8-bit values scaled by 257, which is what the encoder
-      // produces for an 8-bit source. Y plane, then interleaved Cb,Cr at full
-      // height -- 4:2:2, so the chroma plane is as tall as the luma one.
+      // 16-bit: the 8-bit codes shifted left by 8, which is what a 16-bit
+      // sample of an 8-bit code is (and what the encoder produces). Y plane,
+      // then interleaved Cb,Cr at full height -- 4:2:2, so the chroma plane is
+      // as tall as the luma one.
       auto* w16 = reinterpret_cast<uint16_t*>(v.data());
       for(size_t i = 0; i < luma; i++)
-        w16[i] = uint16_t(63 * 257);
+        w16[i] = uint16_t(63 << 8);
       for(size_t i = 0; i < luma; i += 2)
       {
-        w16[luma + i + 0] = uint16_t(102 * 257);
-        w16[luma + i + 1] = uint16_t(240 * 257);
+        w16[luma + i + 0] = uint16_t(102 << 8);
+        w16[luma + i + 1] = uint16_t(240 << 8);
       }
       return v;
     }

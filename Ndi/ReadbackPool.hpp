@@ -60,20 +60,26 @@ struct ReadbackPool
   std::atomic<int> m_inFlight{-1};   // Buffer the SDK is still reading
 
   /// Render thread: hand the buffer just read back to the sender.
-  void queueForSend()
+  void queueForSend() { queueForSend(m_readbackIndex); }
+
+  /// Render thread: hand buffer @p idx to the sender. It must be one the
+  /// renderer wrote, i.e. one advanceToFreeBuffer() returned and nothing has
+  /// queued since: a readback that completes a frame late is queued by index,
+  /// after the renderer has already been pointed at another buffer.
+  void queueForSend(int idx)
   {
-    // Signal sender thread with current readback buffer
     {
       std::lock_guard lock(m_mutex);
       // A frame the sender never got to is dropped, not queued behind this
       // one: for a live output the newest frame is the only one worth
       // sending. Give its buffer back.
       const int stale = m_sendIndex.load(std::memory_order_relaxed);
-      if(stale >= 0 && m_bufState[stale].load(std::memory_order_relaxed) == Buf::Queued)
+      if(stale >= 0 && stale != idx
+         && m_bufState[stale].load(std::memory_order_relaxed) == Buf::Queued)
         m_bufState[stale].store(Buf::Free, std::memory_order_release);
 
-      m_bufState[m_readbackIndex].store(Buf::Queued, std::memory_order_release);
-      m_sendIndex = m_readbackIndex;
+      m_bufState[idx].store(Buf::Queued, std::memory_order_release);
+      m_sendIndex = idx;
       m_frameReady = true;
     }
     m_cv.notify_one();

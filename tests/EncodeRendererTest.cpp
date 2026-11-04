@@ -322,17 +322,19 @@ void runP216Case(RenderState& state, int W, int H)
       Ndi::resolveYuvStandard(Ndi::ColorSpaceSetting::Rec709, W, H));
   const auto* y16 = reinterpret_cast<const uint16_t*>(got);
   const auto* uv16 = reinterpret_cast<const uint16_t*>(got + size_t(rowBytes) * H);
+  // A 16-bit sample is the 8-bit code shifted left by 8, so the expected words
+  // are exp8 * 256; the margin is the rounding of exp8 itself plus a little.
   std::printf(
-      "    Y=%u  U=%u  V=%u   (8-bit equivalents %u %u %u)\n", y16[0], uv16[0], uv16[1],
-      y16[0] / 257, uv16[0] / 257, uv16[1] / 257);
-  check(std::abs(int(y16[0]) - exp8.y * 257) <= 300, "Y matches the standard");
-  check(std::abs(int(uv16[0]) - exp8.u * 257) <= 300, "U matches the standard");
-  check(std::abs(int(uv16[1]) - exp8.v * 257) <= 300, "V matches the standard");
+      "    Y=%u  U=%u  V=%u   (8-bit equivalents %.2f %.2f %.2f)\n", y16[0], uv16[0],
+      uv16[1], y16[0] / 256., uv16[0] / 256., uv16[1] / 256.);
+  check(std::abs(int(y16[0]) - exp8.y * 256) <= 200, "Y matches the standard");
+  check(std::abs(int(uv16[0]) - exp8.u * 256) <= 200, "U matches the standard");
+  check(std::abs(int(uv16[1]) - exp8.v * 256) <= 200, "V matches the standard");
 
   const auto* yLast = y16 + size_t(H - 1) * W;
   const auto* uvLast = uv16 + size_t(H - 1) * W;
-  check(std::abs(int(yLast[0]) - exp8.y * 257) <= 300, "Y's last row is encoded");
-  check(std::abs(int(uvLast[1]) - exp8.v * 257) <= 300, "UV's last row is encoded");
+  check(std::abs(int(yLast[0]) - exp8.y * 256) <= 200, "Y's last row is encoded");
+  check(std::abs(int(uvLast[1]) - exp8.v * 256) <= 200, "UV's last row is encoded");
 
   // And what the sender would put on the wire.
   {

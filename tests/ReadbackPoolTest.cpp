@@ -32,6 +32,7 @@
 #include <memory>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static int failures = 0;
@@ -108,9 +109,28 @@ void testInitialState()
 //   INV4  markSent never frees the buffer it has just marked InFlight, which is
 //         what happens if the same index is sent twice in a row
 // ---------------------------------------------------------------------------
+// How the output node drives the pool.
+//
+//   Legacy     read back into m_readbackIndex, queue it, then advance.
+//   Immediate  advance, read back into the buffer that returned, and queue that
+//              buffer as soon as the frame ends (Vulkan, D3D12, QRhi readback).
+//   Deferred   as Immediate, but the copy is only finished, and the buffer only
+//              queued, at the start of the NEXT frame -- before that frame's
+//              advance (OpenGL, D3D11).
+//
+// The two newer ones also have frames that read nothing back at all, when
+// nobody receives the output.
+enum class RenderMode
+{
+  Legacy,
+  Immediate,
+  Deferred
+};
+
 template <int N>
 struct Model
 {
+  RenderMode mode{RenderMode::Legacy};
   // Where each thread is in its own step sequence.
   //   render:  0 = about to read back into m_readbackIndex, then queue, then advance
   //   sender:  0 = idle/waiting, 1 = holding idx (Sending), 2 = sent
@@ -121,6 +141,7 @@ struct Model
     int senderIdx{-1};
     int sdkReading{-1};  // what the SDK is still reading, tracked outside the pool
     int rendererTarget{0};
+    int pending{-1};     // Deferred: written last frame, not finished yet
   };
 
   int violations{0};
@@ -145,7 +166,7 @@ struct Model
   struct Snapshot
   {
     Buf state[N];
-    int readbackIndex, senderStage, senderIdx, sdkReading, rendererTarget;
+    int readbackIndex, senderStage, senderIdx, sdkReading, rendererTarget, pending;
     int sendIndex, inFlight;
     bool frameReady;
   };
@@ -163,6 +184,7 @@ struct Model
     sn.senderIdx = s.senderIdx;
     sn.sdkReading = s.sdkReading;
     sn.rendererTarget = s.rendererTarget;
+    sn.pending = s.pending;
     return sn;
   }
   void restore(State& s, const Snapshot& sn)
@@ -177,6 +199,40 @@ struct Model
     s.senderIdx = sn.senderIdx;
     s.sdkReading = sn.sdkReading;
     s.rendererTarget = sn.rendererTarget;
+    s.pending = sn.pending;
+  }
+
+  /// The GPU is about to write @p target: it must belong to nobody else.
+  void checkTarget(State& s, int target)
+  {
+    auto& p = *s.pool;
+    if(p.m_bufState[target].load() != Buf::Free)
+      fail("renderer read back into a buffer that is not Free", p, target, -1);
+    if(target == s.sdkReading)
+      fail("renderer read back into a buffer the SDK is still reading", p, target, -1);
+    if(s.senderStage == 1 && target == s.senderIdx)
+      fail("renderer read back into the buffer the sender is converting", p, target, -1);
+    if(target == s.pending)
+      fail("renderer read back into the buffer whose copy is not finished", p, target, -1);
+  }
+
+  /// One whole render() of OutputNode, in the newer modes. @p active is
+  /// whether anybody receives the output, i.e. whether anything is read back.
+  void stepRenderSlots(State& s, bool active)
+  {
+    auto& p = *s.pool;
+    if(s.pending >= 0)
+    {
+      p.queueForSend(std::exchange(s.pending, -1));
+    }
+    const int target = p.advanceToFreeBuffer();
+    if(!active)
+      return;
+    checkTarget(s, target);
+    if(mode == RenderMode::Deferred)
+      s.pending = target;
+    else
+      p.queueForSend(target);
   }
 
   /// One whole render(): fill the current buffer, queue it, pick the next.
@@ -212,6 +268,8 @@ struct Model
     // describeVideoFrame reads the readback here.
     if(idx == s.rendererTarget)
       fail("sender is converting from the buffer the renderer will overwrite", p, idx, -1);
+    if(idx == s.pending)
+      fail("sender is sending a buffer whose copy is not finished", p, idx, -1);
   }
 
   void stepSenderSend(State& s)
@@ -237,11 +295,22 @@ struct Model
       return;
 
     // Branch 1: the render thread runs a frame.
+    if(mode == RenderMode::Legacy)
     {
       const auto sn = save(s);
       stepRender(s);
       explore(s, depth + 1);
       restore(s, sn);
+    }
+    else
+    {
+      for(bool active : {true, false})
+      {
+        const auto sn = save(s);
+        stepRenderSlots(s, active);
+        explore(s, depth + 1);
+        restore(s, sn);
+      }
     }
     // Branch 2: the sender thread takes the next step it can.
     {
@@ -265,13 +334,19 @@ struct Model
 };
 
 template <int N>
-int modelCheck(const char* label, bool expectClean)
+int modelCheck(const char* label, bool expectClean, RenderMode mode = RenderMode::Legacy)
 {
   auto owned = std::make_unique<Ndi::ReadbackPool<N>>();
   auto& pool = *owned;
   pool.m_running = true;
   Model<N> m;
+  m.mode = mode;
   typename Model<N>::State s{&pool};
+  // In the newer modes the renderer has no buffer between frames: it picks one
+  // at the start of each, and checkTarget() checks that pick against the
+  // sender instead.
+  if(mode != RenderMode::Legacy)
+    s.rendererTarget = -1;
   m.explore(s, 0);
   std::printf(
       "  %-28s N=%d  %d interleavings, %d violation%s%s\n", label, N, m.statesSeen,
@@ -726,6 +801,17 @@ int main(int argc, char** argv)
       atThree > 0,
       "the model check found no violation at N=3, so it is not actually checking "
       "anything at N=4 either");
+
+  // The output node's own sequence: pick a Free buffer, read back into it, and
+  // queue it either when the frame ends or -- OpenGL, D3D11 -- when the next
+  // one starts. The buffer whose copy is still pending looks Free to the pool,
+  // so it is the queueing before the advance that keeps it from being picked.
+  modelCheck<4>("slots, queued at frame end", true, RenderMode::Immediate);
+  modelCheck<4>("slots, queued a frame late", true, RenderMode::Deferred);
+  CHECK(
+      modelCheck<3>("slots, a frame late, N=3", false, RenderMode::Deferred) > 0,
+      "the deferred model check found no violation at N=3, so it is not actually "
+      "checking anything at N=4 either");
 
   std::printf("\n-- starvation fallback --\n");
   testStarvationFallback();

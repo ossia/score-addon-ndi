@@ -47,29 +47,32 @@ struct OutputNode : score::gfx::OutputNode
   std::string m_formatStr;  // m_settings.format, converted once, not per frame
   std::weak_ptr<score::gfx::RenderList> m_renderer{};
   QRhiTexture* m_texture{};
-  QRhiTextureRenderTarget* m_renderTarget{};
+  score::gfx::TextureRenderTarget m_renderTarget;
   std::function<void()> m_update;
   std::shared_ptr<score::gfx::RenderState> m_renderState{};
-  // One of these is created in createRenderer, according to the format; the
-  // callback below points whichever it is at the next pool buffer.
-  Gfx::InvertYRenderer* m_inv_y_renderer{};
+  // Created in createRenderer; render() tells it, frame by frame, whether to
+  // encode and which slot to read back into.
   Ndi::WireEncodeRenderer* m_wire_renderer{};
 
   // The picture size the render target was actually created with, which is what
   // the sender describes to the SDK. Written once in createOutput, before the
   // sender thread starts, and read by it from then on.
   QSize m_pictureSize;
-  std::function<void(QRhiReadbackResult&)> m_updateReadback;
   // Readback pool. A frame handed to send_video_async stays owned by the SDK
   // until the next send, so the renderer must never target a buffer that is
   // still spoken for; the states in Ndi::ReadbackPool are what enforce that,
-  // and they are what let the RGBA path send the readback itself with no copy
+  // and they are what let every format send the readback itself with no copy
   // at all.
   //
   // Four buffers: at most one Queued, one Sending and one InFlight, so a Free
-  // one always exists.
+  // one always exists. A copy that WireEncodeRenderer finishes one frame late
+  // is collected, and queued, before the next Free buffer is chosen, so it
+  // never needs a fifth.
+  //
+  // Declared before m_sender: the SDK lets go of the last frame in
+  // send_destroy, in ~Sender, which must run before this memory is freed.
   static constexpr int kBuffers = 4;
-  QRhiReadbackResult m_readback[kBuffers];
+  Ndi::SendSlot m_slots[kBuffers];
   Ndi::ReadbackPool<kBuffers> m_pool;
   const Ndi::Loader& m_ndi;
   Ndi::Sender m_sender;
@@ -139,6 +142,16 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
     qWarning() << "Ndi::OutputNode: unsupported output format"
                << m_settings.format << "-- nothing will be sent";
   }
+
+  // The send buffers, once, at the size this output's settings fix for its
+  // whole life: the GPU writes the encoded frame into them and the SDK reads
+  // it from there, so nothing is allocated or copied per frame.
+  if(const auto bytes
+     = Ndi::framestoreBytes(m_formatStr, m_settings.width, m_settings.height))
+  {
+    for(auto& slot : m_slots)
+      slot.allocate(bytes);
+  }
 }
 
 OutputNode::~OutputNode()
@@ -169,16 +182,12 @@ void OutputNode::senderThreadFunc()
     if(idx < 0)
       continue;
 
-    // Read directly from the readback buffer
-    auto& readback = m_readback[idx];
-
-    // The readback's own geometry is NOT the picture's, and how it differs
-    // depends on the format: UYVYEncoder writes an RGBA8 target at half width
-    // (two pixels per texel), a planar format's framestore is taller than the
-    // picture, and a padded readback is wider than either. So the picture size
-    // comes from the render target that was actually created, and the stride
-    // from the bytes that actually came back, divided by the number of rows the
-    // FORMAT says are in a framestore.
+    // The slot's geometry is NOT the picture's, and how it differs depends on
+    // the format: a packed format's encoder writes two pixels per texel, a
+    // planar format's framestore is taller than the picture. So the picture
+    // size comes from the render target that was actually created, and the
+    // stride from the renderer, which knows where the bytes landed.
+    const auto& slot = m_slots[idx];
     const int width = m_pictureSize.width();
     const int height = m_pictureSize.height();
 
@@ -186,15 +195,10 @@ void OutputNode::senderThreadFunc()
     ndiFrame.frame_rate_N = this->m_settings.rate * 10000;
     ndiFrame.frame_rate_D = 10000;
 
-    // The GPU produced these bytes in the wire format already -- RGBA straight
-    // from the scene, UYVY through UYVYEncoder -- so there is nothing to convert
-    // and nothing to copy. The stride comes from the readback because the
-    // backend may pad rows.
-    const int stride = Ndi::readbackStride(
-        readback.data.size(), Ndi::framestoreRows(m_formatStr, height));
+    // The GPU produced these bytes in the wire format already, so there is
+    // nothing to convert and nothing to copy.
     if(!Ndi::describeVideoFrame(
-           m_formatStr, (const uint8_t*)readback.data.data(), width, height,
-           stride, ndiFrame))
+           m_formatStr, slot.data, width, height, slot.stride, ndiFrame))
     {
       m_pool.releaseUnsent(idx);
       continue;
@@ -240,6 +244,14 @@ void OutputNode::render()
   if(renderer && m_renderState)
   {
     auto rhi = m_renderState->rhi;
+
+    // Nothing to encode or read back when nothing renders into this output or
+    // nobody receives it: the scene still renders, the GPU->CPU part does not.
+    const bool active
+        = renderer->renderers.size() > 1 && m_sender.get_no_connections(0) > 0;
+    if(m_wire_renderer)
+      Ndi::beginSendFrame(*m_wire_renderer, m_pool, active);
+
     QRhiCommandBuffer* cb{};
     if(rhi->beginOffscreenFrame(&cb) != QRhi::FrameOpSuccess)
       return;
@@ -248,21 +260,8 @@ void OutputNode::render()
 
     rhi->endOffscreenFrame();
 
-    if(renderer->renderers.size() > 1)
-    {
-      if(m_sender.get_no_connections(0) > 0)
-      {
-        m_pool.queueForSend();
-      }
-    }
-
-    {
-      auto& rb = m_readback[m_pool.advanceToFreeBuffer()];
-      if(m_wire_renderer)
-        m_wire_renderer->updateReadback(rb);
-      else if(m_inv_y_renderer)
-        m_inv_y_renderer->updateReadback(rb);
-    }
+    if(m_wire_renderer)
+      Ndi::endSendFrame(*m_wire_renderer, m_pool);
   }
 }
 
@@ -321,11 +320,7 @@ void OutputNode::createOutput(score::gfx::OutputConfiguration conf)
       m_renderState->renderSize, 1,
       QRhiTexture::RenderTarget | QRhiTexture::UsedAsTransferSource);
   m_texture->create();
-  m_renderTarget = rhi->newTextureRenderTarget({m_texture});
-  m_renderState->renderPassDescriptor
-      = m_renderTarget->newCompatibleRenderPassDescriptor();
-  m_renderTarget->setRenderPassDescriptor(m_renderState->renderPassDescriptor);
-  m_renderTarget->create();
+  m_renderTarget = score::gfx::createOutputRenderTarget(*m_renderState, *m_texture);
 
   if(conf.onReady)
     conf.onReady();
@@ -351,11 +346,7 @@ void OutputNode::destroyOutput()
   // same reason. It is idempotent.
   releaseRegistry();
 
-  delete m_renderTarget;
-  m_renderTarget = nullptr;
-
-  delete m_renderState->renderPassDescriptor;
-  m_renderState->renderPassDescriptor = nullptr;
+  score::gfx::releaseOutputRenderTarget(*m_renderState, m_renderTarget);
 
   delete m_texture;
   m_texture = nullptr;
@@ -372,34 +363,18 @@ std::shared_ptr<score::gfx::RenderState> OutputNode::renderState() const
 score::gfx::OutputNodeRenderer*
 OutputNode::createRenderer(score::gfx::RenderList& r) const noexcept
 {
-  score::gfx::TextureRenderTarget rt{
-      .texture = m_texture,
-      .renderPass = m_renderState->renderPassDescriptor,
-      .renderTarget = m_renderTarget};
-  auto& readback0 = const_cast<QRhiReadbackResult&>(m_readback[0]);
+  score::gfx::TextureRenderTarget rt = m_renderTarget;
   auto* self = const_cast<OutputNode*>(this);
 
-  // A rebuild lands here with a fresh renderer bound to buffer 0, which is what
-  // ReadbackPool::reset() in startRendering() lines the pool back up with.
-  if(Ndi::ndiEncoding(m_formatStr).hasEncoder())
-  {
-    // Convert on the GPU, through score::gfx's encoder for this wire format.
-    // The encoder folds the Y-flip into the same shader, so there is no
-    // InvertYRenderer in this path at all -- and no sws_scale on the sender
-    // thread, which at 2160p cost 21.5 ms against a 16.67 ms budget.
-    auto* enc = new Ndi::WireEncodeRenderer{
-        *this, rt, readback0, m_formatStr,
-        Ndi::colorSpaceSettingFromName(m_settings.colorSpace)};
-    self->m_wire_renderer = enc;
-    self->m_inv_y_renderer = nullptr;
-    return enc;
-  }
-
-  // RGBA and RGBX: the scene texture is already those bytes.
-  auto* inv = new Gfx::InvertYRenderer{*this, rt, readback0};
-  self->m_inv_y_renderer = inv;
-  self->m_wire_renderer = nullptr;
-  return inv;
+  // Convert on the GPU, through score::gfx's encoder for this wire format,
+  // with the Y-flip folded into the same shader. A rebuild lands here with a
+  // fresh renderer, which ReadbackPool::reset() in startRendering() lines the
+  // pool back up with.
+  auto* enc = new Ndi::WireEncodeRenderer{
+      *this, rt, std::span<Ndi::SendSlot>{self->m_slots}, m_formatStr,
+      Ndi::colorSpaceSettingFromName(m_settings.colorSpace)};
+  self->m_wire_renderer = enc;
+  return enc;
 }
 
 OutputDevice::OutputDevice(
