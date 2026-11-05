@@ -97,8 +97,6 @@ struct MsaaSlotOutput final : score::gfx::OutputNode
       , m_samples{samples}
   {
     input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
-    for(auto& s : m_slots)
-      s.allocate(Ndi::framestoreBytes(m_format, kW, kH));
     m_pool.m_running = true;
   }
 

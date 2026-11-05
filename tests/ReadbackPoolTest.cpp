@@ -433,7 +433,8 @@ void testRestartAfterRebuild()
       "  after 3 frames: m_readbackIndex=%d, renderer bound to %d\n", beforeStop,
       rendererTarget);
 
-  // stopRendering(): join the sender, nothing else.
+  // stopRendering() stops the sender; what it does about the SDK is
+  // testStopWhileInFlight's.
   pool.requestStop();
 
   // The rebuild. createRenderer constructs the InvertYRenderer over
@@ -638,6 +639,104 @@ void testStress(const char* label, int frames)
 }
 
 // ---------------------------------------------------------------------------
+// 4b. A rebuild while the SDK still reads the last frame.
+//
+// OutputNode::stopRendering() joins the sender and the pool is reset, so every
+// buffer is Free for the next renderer -- but the buffer last handed to
+// send_video_async is the SDK's until the next call. Unless stopping makes that
+// call, the next renderer writes a buffer the SDK is reading.
+//
+// Returns whether the SDK model let go of its buffer before reset() freed it.
+// @p flushes false replays stopping without the SDK call, which has to be
+// caught, or the check proves nothing.
+// ---------------------------------------------------------------------------
+bool runStopWhileInFlight(bool flushes, int& corruptions)
+{
+  auto owned = std::make_unique<Ndi::ReadbackPool<4>>();
+  auto& pool = *owned;
+  std::vector<uint8_t> buffers[4];
+  for(auto& b : buffers)
+    b.assign(kPayload, 0);
+
+  SdkModel sdk;
+  sdk.buffers = buffers;
+  sdk.start();
+
+  std::atomic<int> sent{0};
+  pool.m_running = true;
+  std::thread sender([&] {
+    while(pool.m_running)
+    {
+      const int idx = pool.acquireForSending();
+      if(idx < 0)
+        continue;
+      sdk.send(idx);
+      pool.markSent(idx);
+      sent.fetch_add(1);
+    }
+  });
+
+  for(int rendered = 0; sent.load() < 20 && rendered < 100000; rendered++)
+  {
+    std::memset(buffers[pool.m_readbackIndex].data(), uint8_t(rendered & 0xff), kPayload);
+    pool.queueForSend();
+    pool.advanceToFreeBuffer();
+    std::this_thread::yield();
+  }
+
+  bool freedWhileHeld = false;
+  pool.stopAndReclaim(sender, [&] {
+    if(flushes)
+      sdk.send(-1);
+  });
+  const int held = sdk.acked.load(std::memory_order_acquire);
+  const Buf heldState = held >= 0 ? pool.m_bufState[held].load() : Buf::Free;
+  if(held >= 0 && heldState == Buf::Free)
+    freedWhileHeld = true;
+
+  // The next renderer: reads back into buffer 0, then walks the pool, which
+  // reset() made all Free, so it reaches every buffer.
+  pool.m_running = true;
+  for(int f = 0; f < 4; f++)
+  {
+    std::memset(buffers[pool.m_readbackIndex].data(), uint8_t(0x80 + f), kPayload);
+    pool.queueForSend();
+    pool.advanceToFreeBuffer();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  sdk.stop();
+  pool.requestStop();
+
+  corruptions = sdk.corruptions.load();
+  std::printf(
+      "  %-34s %d sent, SDK holding %d after the stop (pool says %s), %d corruptions\n",
+      flushes ? "stop flushes the SDK:" : "stop without the SDK call:", sent.load(),
+      held, held < 0 ? "nothing" : name(heldState), corruptions);
+  return !freedWhileHeld;
+}
+
+void testStopWhileInFlight()
+{
+  int corruptions{};
+  const bool control = runStopWhileInFlight(false, corruptions);
+  CHECK(
+      !control,
+      "without the SDK call the stop still left the SDK holding nothing; this test "
+      "cannot tell a stop that flushes from one that does not");
+
+  const bool ok = runStopWhileInFlight(true, corruptions);
+  CHECK(
+      ok,
+      "stopAndReclaim() marked the buffer the SDK is still reading Free; the "
+      "renderer built after a rebuild writes into it while it is being sent");
+  CHECK(
+      corruptions == 0,
+      "after the stop, the next renderer rewrote a buffer %d time(s) while the SDK "
+      "model was still reading it",
+      corruptions);
+}
+
+// ---------------------------------------------------------------------------
 // 5. requestStop() writes the predicate without holding the mutex.
 //
 // senderThreadFunc waits on `m_frameReady || !m_running`. requestStop() -- which
@@ -821,6 +920,9 @@ int main(int argc, char** argv)
 
   std::printf("\n-- stress (render thread + sender thread + SDK reader) --\n");
   testStress<4>("production pool", quick ? 300 : 3000);
+
+  std::printf("\n-- rebuild while the SDK reads the last frame --\n");
+  testStopWhileInFlight();
 
   std::printf("\n-- shutdown wakeup --\n");
   testStopWakeup();

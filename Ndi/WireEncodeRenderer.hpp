@@ -37,6 +37,10 @@
 
 #include <QtGui/private/qrhi_p.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <cstdint>
 #include <memory>
 #include <new>
@@ -51,9 +55,11 @@ namespace Ndi
 /**
  * @brief One buffer of the output node's readback pool.
  *
- * `host` is allocated once per output, aligned so that every backend that can
- * import host memory accepts it, and it is what the SDK reads when the GPU
- * could write it directly. `readback` is QRhi's destination when it could not.
+ * `host` is what the SDK reads when the GPU could write it directly. It is
+ * allocated by the renderer the first time the direct path is taken, and
+ * then kept for the output's whole life, so a backend that never takes that
+ * path costs no memory and steady-state frames allocate nothing. `readback`
+ * is QRhi's destination when the GPU could not write `host`.
  * `data`, `size` and `stride` describe whichever of the two holds the frame;
  * the renderer sets them before the slot is queued for sending.
  */
@@ -63,15 +69,33 @@ struct SendSlot
   /// the device's import alignment, 4 KiB on every known implementation.
   static constexpr std::size_t kAlignment = 65536;
 
-  struct AlignedFree
+  // D3D12 imports `host` with OpenExistingHeapFromAddress, which accepts
+  // nothing but VirtualAlloc regions. VirtualAlloc places a region on the
+  // 64 KiB allocation granularity, so kAlignment comes with it.
+  static std::uint8_t* allocateHost(std::size_t bytes) noexcept
+  {
+#if defined(_WIN32)
+    return static_cast<std::uint8_t*>(
+        ::VirtualAlloc(nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+#else
+    return static_cast<std::uint8_t*>(
+        ::operator new(bytes, std::align_val_t{kAlignment}, std::nothrow));
+#endif
+  }
+
+  struct HostFree
   {
     void operator()(std::uint8_t* p) const noexcept
     {
+#if defined(_WIN32)
+      ::VirtualFree(p, 0, MEM_RELEASE);
+#else
       ::operator delete(p, std::align_val_t{kAlignment});
+#endif
     }
   };
 
-  std::unique_ptr<std::uint8_t, AlignedFree> host;
+  std::unique_ptr<std::uint8_t, HostFree> host;
   std::size_t capacity{};
   QRhiReadbackResult readback;
 
@@ -79,11 +103,17 @@ struct SendSlot
   int size{};
   int stride{};
 
-  void allocate(std::size_t bytes)
+  /// Makes `host` hold at least @p bytes, rounded up to kAlignment. A buffer
+  /// that is already large enough is kept as it is: the SDK may still be
+  /// reading it. False when the memory could not be had.
+  bool allocate(std::size_t bytes) noexcept
   {
-    capacity = (bytes + kAlignment - 1) / kAlignment * kAlignment;
-    host.reset(static_cast<std::uint8_t*>(
-        ::operator new(capacity, std::align_val_t{kAlignment})));
+    const std::size_t want = (bytes + kAlignment - 1) / kAlignment * kAlignment;
+    if(host && capacity >= want)
+      return true;
+    host.reset(allocateHost(want));
+    capacity = host ? want : 0;
+    return bool(host);
   }
 };
 
@@ -321,7 +351,7 @@ private:
 
     for(auto& slot : m_slots)
     {
-      if(!slot.host || slot.capacity < framestore)
+      if(!slot.allocate(framestore))
         break;
       auto* t = score::gfx::createReadbackTarget(rhi, slot.host.get(), slot.capacity);
       if(!t)

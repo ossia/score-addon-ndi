@@ -26,6 +26,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 namespace Ndi
 {
@@ -139,6 +140,25 @@ struct ReadbackPool
     m_bufState[idx].store(Buf::InFlight, std::memory_order_release);
     if(prev >= 0)
       m_bufState[prev].store(Buf::Free, std::memory_order_release);
+  }
+
+  /// Stop @p sender, take every buffer back, and reset().
+  ///
+  /// The buffer last handed to send_video_async is read by the SDK until the
+  /// next call, so reset() alone would call it Free while it is still being
+  /// read, and the next renderer would write into it: one torn frame after
+  /// every render-list rebuild. @p flush is that next call
+  /// (send_video_async(nullptr), Ndi::Sender::flush_async); it runs after the
+  /// join, so nothing can be handed over behind it.
+  template <typename Flush>
+  void stopAndReclaim(std::thread& sender, Flush&& flush)
+  {
+    requestStop();
+    if(sender.joinable())
+      sender.join();
+    if(m_inFlight.load(std::memory_order_acquire) >= 0)
+      flush();
+    reset();
   }
 
   /// Put every buffer back to Free and forget any in-flight frame.

@@ -119,8 +119,6 @@ struct SlotOutput final : score::gfx::OutputNode
       , m_format{std::move(format)}
   {
     input.push_back(new score::gfx::Port{this, {}, score::gfx::Types::Image, {}});
-    for(auto& s : m_slots)
-      s.allocate(Ndi::framestoreBytes(m_format, sz.width(), sz.height()));
     m_pool.m_running = true;
   }
 
@@ -217,6 +215,10 @@ struct Run
   bool ok{};
   bool direct{};
   bool late{};
+  // Slots whose host memory is allocated, and how many of them hold a
+  // framestore.
+  int hostSlots{};
+  int hostSlotsLargeEnough{};
   std::vector<Sent> frames;
   int queuedWhileInactive{-1};
 };
@@ -323,6 +325,13 @@ Run runOnce(GraphicsApi api, const std::string& format, int W, int H, int frames
       out->renderFrame(false);
       take();
       run.queuedWhileInactive = int(run.frames.size()) - before + warmupSent;
+      for(const auto& slot : out->m_slots)
+      {
+        run.hostSlots += bool(slot.host);
+        run.hostSlotsLargeEnough += bool(slot.host)
+                                    && slot.capacity >= Ndi::framestoreBytes(format, W, H)
+                                    && slot.capacity % Ndi::SendSlot::kAlignment == 0;
+      }
       run.frames.erase(run.frames.begin(), run.frames.begin() + warmupSent);
     }
     graph.clearEdges();
@@ -391,7 +400,7 @@ void checkP216(const Sent& s, int W, int H)
   // 8-bit value scaled up would put at 235 * 257 rather than at 235 * 256.
   const double white = word(luma);
   std::printf("    P216 white luma word: %.0f (expect 60160)\n", white);
-  check(std::abs(white - 60160) <= 64, "P216 white is 235 << 8");
+  check(std::abs(white - 60160) <= 4, "P216 white is 235 << 8");
 }
 
 void checkPacked(const std::string& format, const Sent& s, int W, int H)
@@ -450,6 +459,12 @@ void runFormat(GraphicsApi api, const std::string& format, int W, int H)
       direct.late ? ", finished one frame late" : "", direct.frames.size(),
       viaQRhi.frames.size());
   check(!viaQRhi.direct, format + ": SCORE_GFX_DIRECT_READBACK=never is honoured");
+  check(
+      viaQRhi.hostSlots == 0,
+      format + ": no send slot memory is allocated when the direct path is not taken");
+  check(
+      !direct.direct || direct.hostSlotsLargeEnough == 4,
+      format + ": the direct path allocates every slot, a whole framestore each");
 
   // A frame finished late is still sent; the only frame that never is, is
   // none. All seven active frames have to come out.

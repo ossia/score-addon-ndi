@@ -68,6 +68,9 @@ struct OutputNode : score::gfx::OutputNode
   // is collected, and queued, before the next Free buffer is chosen, so it
   // never needs a fifth.
   //
+  // The slots' host memory is allocated by WireEncodeRenderer, once, when the
+  // direct readback path is taken (Ndi::SendSlot).
+  //
   // Declared before m_sender: the SDK lets go of the last frame in
   // send_destroy, in ~Sender, which must run before this memory is freed.
   static constexpr int kBuffers = 4;
@@ -140,16 +143,6 @@ OutputNode::OutputNode(const Ndi::Loader& ndi, const Ndi::OutputSettings& set)
   {
     qWarning() << "Ndi::OutputNode: unsupported output format"
                << m_settings.format << "-- nothing will be sent";
-  }
-
-  // The send buffers, once, at the size this output's settings fix for its
-  // whole life: the GPU writes the encoded frame into them and the SDK reads
-  // it from there, so nothing is allocated or copied per frame.
-  if(const auto bytes
-     = Ndi::framestoreBytes(m_formatStr, m_settings.width, m_settings.height))
-  {
-    for(auto& slot : m_slots)
-      slot.allocate(bytes);
   }
 }
 
@@ -272,9 +265,10 @@ void OutputNode::onRendererChange() { }
 
 void OutputNode::stopRendering()
 {
-  m_pool.requestStop();
-  if(m_senderThread.joinable())
-    m_senderThread.join();
+  // The renderer built next reads back into these slots from the first frame,
+  // including the one the SDK was last handed: the SDK has to let go of it
+  // before the pool calls it Free.
+  m_pool.stopAndReclaim(m_senderThread, [this] { m_sender.flush_async(); });
 }
 
 void OutputNode::setRenderer(std::shared_ptr<score::gfx::RenderList> r)
