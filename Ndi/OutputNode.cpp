@@ -23,7 +23,6 @@
 #include <mutex>
 #include <thread>
 #include <QTimer>
-#include <QtGui/private/qrhigles2_p.h>
 
 #include <Ndi/OutputNode.hpp>
 #include <Ndi/OutputSettings.hpp>
