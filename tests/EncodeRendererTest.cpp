@@ -36,8 +36,11 @@
 
 #include <algorithm>
 #include <clocale>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
+#include <string>
 #include <vector>
 
 using namespace score::gfx;
@@ -224,6 +227,39 @@ void runCase(
   enc.release();
 }
 
+// Vertical bands for the P216 values. Every band starts on an even column at
+// 1280 wide, so no chroma pair straddles two of them.
+struct P216Band
+{
+  const char* name;
+  uint8_t r, g, b;
+};
+constexpr P216Band kP216Bands[] = {
+    {"white", 255, 255, 255}, {"black", 0, 0, 0}, {"grey 128", 128, 128, 128},
+    {"grey 64", 64, 64, 64},  {"red", 255, 0, 0},
+};
+constexpr int kP216BandCount = int(std::size(kP216Bands));
+
+// GPU float rounding; a wrong scale is hundreds of words away at the top.
+constexpr int kP216Tolerance = 3;
+
+struct ExpectedWords
+{
+  double y, u, v;
+};
+
+// Rec.709 limited range at 16 bits, the 8-bit codes shifted left by 8:
+// Y = (16 + 219 Y') << 8, C = (128 + 224 C') << 8. White is 60160, black 4096,
+// neutral chroma 32768.
+ExpectedWords expectedP216Rec709(const P216Band& b)
+{
+  const double r = b.r / 255., g = b.g / 255., bl = b.b / 255.;
+  const double y = 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  const double cb = (bl - y) / 1.8556;
+  const double cr = (r - y) / 1.5748;
+  return {(16. + 219. * y) * 256., (128. + 224. * cb) * 256., (128. + 224. * cr) * 256.};
+}
+
 // The 16-bit path.
 //
 // P216 has two encoders in score::gfx: two plane textures, and one texture that
@@ -240,13 +276,16 @@ void runP216Case(RenderState& state, int W, int H)
       = rhi.newTexture(QRhiTexture::RGBA8, QSize(W, H), 1, QRhiTexture::UsedAsTransferSource);
   input->create();
   std::vector<uint8_t> px(size_t(W) * H * 4);
-  for(size_t i = 0; i < px.size(); i += 4)
-  {
-    px[i + 0] = 255;
-    px[i + 1] = 0;
-    px[i + 2] = 0;
-    px[i + 3] = 255;
-  }
+  for(int y = 0; y < H; y++)
+    for(int x = 0; x < W; x++)
+    {
+      const auto& b = kP216Bands[x * kP216BandCount / W];
+      auto* p = &px[(size_t(y) * W + x) * 4];
+      p[0] = b.r;
+      p[1] = b.g;
+      p[2] = b.b;
+      p[3] = 255;
+    }
 
   const auto encoding = Ndi::ndiEncoding("P216");
   check(encoding.hasEncoder(), "P216 has a GPU encoder");
@@ -317,22 +356,38 @@ void runP216Case(RenderState& state, int W, int H)
 
   const auto* got = reinterpret_cast<const uint8_t*>(packedRb.data.constData());
 
-  // And the values themselves, in the standard the default calls for.
-  const auto exp8 = expectedRed(
-      Ndi::resolveYuvStandard(Ndi::ColorSpaceSetting::Rec709, W, H));
+  // And the values themselves, word for word, at the first and the last row:
+  // the scale is what a 16-bit format is about, and 235 * 257 or a 65535
+  // full scale is only 0.4% away from 235 * 256.
+  check(
+      Ndi::resolveYuvStandard(Ndi::ColorSpaceSetting::Rec709, W, H)
+          == Ndi::YuvStandard::BT709,
+      "the default encodes Rec.709");
   const auto* y16 = reinterpret_cast<const uint16_t*>(got);
   const auto* uv16 = reinterpret_cast<const uint16_t*>(got + size_t(rowBytes) * H);
-  std::printf(
-      "    Y=%u  U=%u  V=%u   (8-bit equivalents %u %u %u)\n", y16[0], uv16[0], uv16[1],
-      y16[0] / 257, uv16[0] / 257, uv16[1] / 257);
-  check(std::abs(int(y16[0]) - exp8.y * 257) <= 300, "Y matches the standard");
-  check(std::abs(int(uv16[0]) - exp8.u * 257) <= 300, "U matches the standard");
-  check(std::abs(int(uv16[1]) - exp8.v * 257) <= 300, "V matches the standard");
-
-  const auto* yLast = y16 + size_t(H - 1) * W;
-  const auto* uvLast = uv16 + size_t(H - 1) * W;
-  check(std::abs(int(yLast[0]) - exp8.y * 257) <= 300, "Y's last row is encoded");
-  check(std::abs(int(uvLast[1]) - exp8.v * 257) <= 300, "UV's last row is encoded");
+  for(int i = 0; i < kP216BandCount; i++)
+  {
+    const auto& b = kP216Bands[i];
+    const auto e = expectedP216Rec709(b);
+    // The middle of the band, on an even pixel: its chroma pair is inside the
+    // band too.
+    const int x = ((2 * i + 1) * W / (2 * kP216BandCount)) & ~1;
+    for(int row : {0, H - 1})
+    {
+      const auto* yr = y16 + size_t(row) * W;
+      const auto* uvr = uv16 + size_t(row) * W;
+      const int gy = yr[x], gu = uvr[x], gv = uvr[x + 1];
+      std::printf(
+          "    %-9s row %3d: Y=%5d U=%5d V=%5d   (expect %.1f %.1f %.1f)\n", b.name,
+          row, gy, gu, gv, e.y, e.u, e.v);
+      const auto within = [](int got, double want) {
+        return std::abs(got - want) <= kP216Tolerance;
+      };
+      check(within(gy, e.y), (std::string(b.name) + ": Y word").c_str());
+      check(within(gu, e.u), (std::string(b.name) + ": Cb word").c_str());
+      check(within(gv, e.v), (std::string(b.name) + ": Cr word").c_str());
+    }
+  }
 
   // And what the sender would put on the wire.
   {

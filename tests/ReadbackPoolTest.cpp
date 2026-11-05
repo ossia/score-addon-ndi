@@ -32,6 +32,7 @@
 #include <memory>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 static int failures = 0;
@@ -108,9 +109,28 @@ void testInitialState()
 //   INV4  markSent never frees the buffer it has just marked InFlight, which is
 //         what happens if the same index is sent twice in a row
 // ---------------------------------------------------------------------------
+// How the output node drives the pool.
+//
+//   Legacy     read back into m_readbackIndex, queue it, then advance.
+//   Immediate  advance, read back into the buffer that returned, and queue that
+//              buffer as soon as the frame ends (Vulkan, D3D12, QRhi readback).
+//   Deferred   as Immediate, but the copy is only finished, and the buffer only
+//              queued, at the start of the NEXT frame -- before that frame's
+//              advance (OpenGL, D3D11).
+//
+// The two newer ones also have frames that read nothing back at all, when
+// nobody receives the output.
+enum class RenderMode
+{
+  Legacy,
+  Immediate,
+  Deferred
+};
+
 template <int N>
 struct Model
 {
+  RenderMode mode{RenderMode::Legacy};
   // Where each thread is in its own step sequence.
   //   render:  0 = about to read back into m_readbackIndex, then queue, then advance
   //   sender:  0 = idle/waiting, 1 = holding idx (Sending), 2 = sent
@@ -121,6 +141,7 @@ struct Model
     int senderIdx{-1};
     int sdkReading{-1};  // what the SDK is still reading, tracked outside the pool
     int rendererTarget{0};
+    int pending{-1};     // Deferred: written last frame, not finished yet
   };
 
   int violations{0};
@@ -145,7 +166,7 @@ struct Model
   struct Snapshot
   {
     Buf state[N];
-    int readbackIndex, senderStage, senderIdx, sdkReading, rendererTarget;
+    int readbackIndex, senderStage, senderIdx, sdkReading, rendererTarget, pending;
     int sendIndex, inFlight;
     bool frameReady;
   };
@@ -163,6 +184,7 @@ struct Model
     sn.senderIdx = s.senderIdx;
     sn.sdkReading = s.sdkReading;
     sn.rendererTarget = s.rendererTarget;
+    sn.pending = s.pending;
     return sn;
   }
   void restore(State& s, const Snapshot& sn)
@@ -177,6 +199,40 @@ struct Model
     s.senderIdx = sn.senderIdx;
     s.sdkReading = sn.sdkReading;
     s.rendererTarget = sn.rendererTarget;
+    s.pending = sn.pending;
+  }
+
+  /// The GPU is about to write @p target: it must belong to nobody else.
+  void checkTarget(State& s, int target)
+  {
+    auto& p = *s.pool;
+    if(p.m_bufState[target].load() != Buf::Free)
+      fail("renderer read back into a buffer that is not Free", p, target, -1);
+    if(target == s.sdkReading)
+      fail("renderer read back into a buffer the SDK is still reading", p, target, -1);
+    if(s.senderStage == 1 && target == s.senderIdx)
+      fail("renderer read back into the buffer the sender is converting", p, target, -1);
+    if(target == s.pending)
+      fail("renderer read back into the buffer whose copy is not finished", p, target, -1);
+  }
+
+  /// One whole render() of OutputNode, in the newer modes. @p active is
+  /// whether anybody receives the output, i.e. whether anything is read back.
+  void stepRenderSlots(State& s, bool active)
+  {
+    auto& p = *s.pool;
+    if(s.pending >= 0)
+    {
+      p.queueForSend(std::exchange(s.pending, -1));
+    }
+    const int target = p.advanceToFreeBuffer();
+    if(!active)
+      return;
+    checkTarget(s, target);
+    if(mode == RenderMode::Deferred)
+      s.pending = target;
+    else
+      p.queueForSend(target);
   }
 
   /// One whole render(): fill the current buffer, queue it, pick the next.
@@ -212,6 +268,8 @@ struct Model
     // describeVideoFrame reads the readback here.
     if(idx == s.rendererTarget)
       fail("sender is converting from the buffer the renderer will overwrite", p, idx, -1);
+    if(idx == s.pending)
+      fail("sender is sending a buffer whose copy is not finished", p, idx, -1);
   }
 
   void stepSenderSend(State& s)
@@ -237,11 +295,22 @@ struct Model
       return;
 
     // Branch 1: the render thread runs a frame.
+    if(mode == RenderMode::Legacy)
     {
       const auto sn = save(s);
       stepRender(s);
       explore(s, depth + 1);
       restore(s, sn);
+    }
+    else
+    {
+      for(bool active : {true, false})
+      {
+        const auto sn = save(s);
+        stepRenderSlots(s, active);
+        explore(s, depth + 1);
+        restore(s, sn);
+      }
     }
     // Branch 2: the sender thread takes the next step it can.
     {
@@ -265,13 +334,19 @@ struct Model
 };
 
 template <int N>
-int modelCheck(const char* label, bool expectClean)
+int modelCheck(const char* label, bool expectClean, RenderMode mode = RenderMode::Legacy)
 {
   auto owned = std::make_unique<Ndi::ReadbackPool<N>>();
   auto& pool = *owned;
   pool.m_running = true;
   Model<N> m;
+  m.mode = mode;
   typename Model<N>::State s{&pool};
+  // In the newer modes the renderer has no buffer between frames: it picks one
+  // at the start of each, and checkTarget() checks that pick against the
+  // sender instead.
+  if(mode != RenderMode::Legacy)
+    s.rendererTarget = -1;
   m.explore(s, 0);
   std::printf(
       "  %-28s N=%d  %d interleavings, %d violation%s%s\n", label, N, m.statesSeen,
@@ -358,7 +433,8 @@ void testRestartAfterRebuild()
       "  after 3 frames: m_readbackIndex=%d, renderer bound to %d\n", beforeStop,
       rendererTarget);
 
-  // stopRendering(): join the sender, nothing else.
+  // stopRendering() stops the sender; what it does about the SDK is
+  // testStopWhileInFlight's.
   pool.requestStop();
 
   // The rebuild. createRenderer constructs the InvertYRenderer over
@@ -563,6 +639,104 @@ void testStress(const char* label, int frames)
 }
 
 // ---------------------------------------------------------------------------
+// 4b. A rebuild while the SDK still reads the last frame.
+//
+// OutputNode::stopRendering() joins the sender and the pool is reset, so every
+// buffer is Free for the next renderer -- but the buffer last handed to
+// send_video_async is the SDK's until the next call. Unless stopping makes that
+// call, the next renderer writes a buffer the SDK is reading.
+//
+// Returns whether the SDK model let go of its buffer before reset() freed it.
+// @p flushes false replays stopping without the SDK call, which has to be
+// caught, or the check proves nothing.
+// ---------------------------------------------------------------------------
+bool runStopWhileInFlight(bool flushes, int& corruptions)
+{
+  auto owned = std::make_unique<Ndi::ReadbackPool<4>>();
+  auto& pool = *owned;
+  std::vector<uint8_t> buffers[4];
+  for(auto& b : buffers)
+    b.assign(kPayload, 0);
+
+  SdkModel sdk;
+  sdk.buffers = buffers;
+  sdk.start();
+
+  std::atomic<int> sent{0};
+  pool.m_running = true;
+  std::thread sender([&] {
+    while(pool.m_running)
+    {
+      const int idx = pool.acquireForSending();
+      if(idx < 0)
+        continue;
+      sdk.send(idx);
+      pool.markSent(idx);
+      sent.fetch_add(1);
+    }
+  });
+
+  for(int rendered = 0; sent.load() < 20 && rendered < 100000; rendered++)
+  {
+    std::memset(buffers[pool.m_readbackIndex].data(), uint8_t(rendered & 0xff), kPayload);
+    pool.queueForSend();
+    pool.advanceToFreeBuffer();
+    std::this_thread::yield();
+  }
+
+  bool freedWhileHeld = false;
+  pool.stopAndReclaim(sender, [&] {
+    if(flushes)
+      sdk.send(-1);
+  });
+  const int held = sdk.acked.load(std::memory_order_acquire);
+  const Buf heldState = held >= 0 ? pool.m_bufState[held].load() : Buf::Free;
+  if(held >= 0 && heldState == Buf::Free)
+    freedWhileHeld = true;
+
+  // The next renderer: reads back into buffer 0, then walks the pool, which
+  // reset() made all Free, so it reaches every buffer.
+  pool.m_running = true;
+  for(int f = 0; f < 4; f++)
+  {
+    std::memset(buffers[pool.m_readbackIndex].data(), uint8_t(0x80 + f), kPayload);
+    pool.queueForSend();
+    pool.advanceToFreeBuffer();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  sdk.stop();
+  pool.requestStop();
+
+  corruptions = sdk.corruptions.load();
+  std::printf(
+      "  %-34s %d sent, SDK holding %d after the stop (pool says %s), %d corruptions\n",
+      flushes ? "stop flushes the SDK:" : "stop without the SDK call:", sent.load(),
+      held, held < 0 ? "nothing" : name(heldState), corruptions);
+  return !freedWhileHeld;
+}
+
+void testStopWhileInFlight()
+{
+  int corruptions{};
+  const bool control = runStopWhileInFlight(false, corruptions);
+  CHECK(
+      !control,
+      "without the SDK call the stop still left the SDK holding nothing; this test "
+      "cannot tell a stop that flushes from one that does not");
+
+  const bool ok = runStopWhileInFlight(true, corruptions);
+  CHECK(
+      ok,
+      "stopAndReclaim() marked the buffer the SDK is still reading Free; the "
+      "renderer built after a rebuild writes into it while it is being sent");
+  CHECK(
+      corruptions == 0,
+      "after the stop, the next renderer rewrote a buffer %d time(s) while the SDK "
+      "model was still reading it",
+      corruptions);
+}
+
+// ---------------------------------------------------------------------------
 // 5. requestStop() writes the predicate without holding the mutex.
 //
 // senderThreadFunc waits on `m_frameReady || !m_running`. requestStop() -- which
@@ -727,6 +901,17 @@ int main(int argc, char** argv)
       "the model check found no violation at N=3, so it is not actually checking "
       "anything at N=4 either");
 
+  // The output node's own sequence: pick a Free buffer, read back into it, and
+  // queue it either when the frame ends or -- OpenGL, D3D11 -- when the next
+  // one starts. The buffer whose copy is still pending looks Free to the pool,
+  // so it is the queueing before the advance that keeps it from being picked.
+  modelCheck<4>("slots, queued at frame end", true, RenderMode::Immediate);
+  modelCheck<4>("slots, queued a frame late", true, RenderMode::Deferred);
+  CHECK(
+      modelCheck<3>("slots, a frame late, N=3", false, RenderMode::Deferred) > 0,
+      "the deferred model check found no violation at N=3, so it is not actually "
+      "checking anything at N=4 either");
+
   std::printf("\n-- starvation fallback --\n");
   testStarvationFallback();
 
@@ -735,6 +920,9 @@ int main(int argc, char** argv)
 
   std::printf("\n-- stress (render thread + sender thread + SDK reader) --\n");
   testStress<4>("production pool", quick ? 300 : 3000);
+
+  std::printf("\n-- rebuild while the SDK reads the last frame --\n");
+  testStopWhileInFlight();
 
   std::printf("\n-- shutdown wakeup --\n");
   testStopWakeup();

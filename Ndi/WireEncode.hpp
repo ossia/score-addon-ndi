@@ -15,8 +15,9 @@
  * produces one texture whose readback IS the framestore: the renderer reads it
  * straight into the send buffer and nothing is copied between GPU and wire.
  *
- * RGBA/RGBX are not in the table: the scene texture is already those bytes, so
- * that path runs InvertYRenderer and sends the scene's own readback.
+ * RGBA and RGBX go through the RGBA swizzle of the same byte-order encoder as
+ * BGRA. It changes no value, but it gives every format the same single output
+ * texture, with the Y-flip folded in, for the renderer to read back.
  */
 
 #include <Gfx/Graph/encoders/WireEncoderFactory.hpp>
@@ -32,8 +33,8 @@ namespace Ndi
 /// How to produce one NDI wire format on the GPU.
 struct NdiEncoding
 {
-  /// Unknown means no encoder: the scene texture is already the wire format
-  /// (RGBA), and the output node reads it back through InvertYRenderer.
+  /// Unknown means no encoder, which is the case only for a format this addon
+  /// cannot send.
   Video::VideoPixelFormat gfx{
       Video::VideoPixelFormat::Unknown};
 
@@ -50,16 +51,17 @@ struct NdiEncoding
 };
 
 /// The encoding for @p name, or a default-constructed one (no encoder) for
-/// RGBA and for anything this addon cannot send.
+/// anything this addon cannot send.
 inline NdiEncoding ndiEncoding(std::string_view name) noexcept
 {
   using F = Video::VideoPixelFormat;
 
-  // RGBA: the scene is already these bytes. RGBX is the same bytes with a hint
-  // that the alpha is all 255 -- NDI's own words -- so it is sent the same way.
-  // Choosing it is a statement about the content, not a conversion.
+  // RGBA: the scene's own bytes, put the right way up. RGBX is the same bytes
+  // with a hint that the alpha is all 255 -- NDI's own words -- so it is sent
+  // the same way. Choosing it is a statement about the content, not a
+  // conversion.
   if(name == "RGBA" || name == "RGBX")
-    return {};
+    return {.gfx = F::RGBA8, .floatRender = false};
 
   if(name == "BGRA" || name == "BGRX")
     return {.gfx = F::BGRA8, .floatRender = false};
@@ -87,8 +89,7 @@ inline NdiEncoding ndiEncoding(std::string_view name) noexcept
   return {};
 }
 
-/// The encoder for @p name, or nullptr when the format needs none (RGBA) or
-/// score::gfx has none for it.
+/// The encoder for @p name, or nullptr when score::gfx has none for it.
 inline std::unique_ptr<score::gfx::GPUVideoEncoder>
 makeNdiEncoder(std::string_view name)
 {

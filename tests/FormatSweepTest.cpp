@@ -228,7 +228,6 @@ Encoded encodeOnGpu(
   Encoded out;
   auto& rhi = *state.rhi;
 
-  const auto encoding = Ndi::ndiEncoding(format);
   const auto* wire = Ndi::findWireFormat(format);
   if(!wire)
   {
@@ -242,17 +241,6 @@ Encoded encodeOnGpu(
   {
     delete input;
     out.why = "input texture creation failed";
-    return out;
-  }
-
-  // RGBA/RGBX have no encoder: the scene texture is already the wire bytes, so
-  // the "encode" is the identity and the framestore is the upload itself.
-  if(!encoding.hasEncoder())
-  {
-    delete input;
-    out.ok = true;
-    out.framestore = rgba;
-    out.stride = W * 4;
     return out;
   }
 
@@ -788,13 +776,7 @@ void phase4(RenderState& state)
       encodeOnGpu(state, format, r.w, r.h, Ndi::ColorSpaceSetting::Rec709, rgba);
       auto enc = encodeOnGpu(
           state, format, r.w, r.h, Ndi::ColorSpaceSetting::Rec709, rgba, 20);
-      // RGBA/RGBX have no encoder here, so there is nothing to time: in
-      // production that path is InvertYRenderer + a readback, which this
-      // harness does not build. Say so rather than printing a 0.00 that looks
-      // like a result.
-      if(!Ndi::ndiEncoding(format).hasEncoder())
-        std::printf(" %12s", "(no encoder)");
-      else if(enc.ok)
+      if(enc.ok)
         std::printf(" %12.2f", enc.encodeMs);
       else
         std::printf(" %12s", "-");

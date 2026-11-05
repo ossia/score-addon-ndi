@@ -1,0 +1,8 @@
+/*{
+  "ISFVSN": "2",
+  "DESCRIPTION": "Copies its input, alpha included.",
+  "INPUTS": [ { "NAME": "inputImage", "TYPE": "image" } ]
+}*/
+void main() {
+  gl_FragColor = IMG_NORM_PIXEL(inputImage, isf_FragNormCoord);
+}

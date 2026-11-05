@@ -191,6 +191,50 @@ if(SCORE_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/PixelFormatTest.c
     endif()
   endif()
 
+  # The readback into the send slots, through the real WireEncodeRenderer and
+  # the pool, for every wire format, against QRhi's own readback. Needs a QRhi.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/SendSlotTest.cpp")
+    add_executable(score_addon_ndi_send_slot_test tests/SendSlotTest.cpp)
+    target_include_directories(score_addon_ndi_send_slot_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_send_slot_test
+      PRIVATE score_plugin_gfx score_plugin_media ${QT_PREFIX}::Gui avutil)
+    target_compile_features(score_addon_ndi_send_slot_test PRIVATE cxx_std_20)
+
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_send_slot
+               COMMAND score_addon_ndi_send_slot_test)
+      add_test(NAME score_addon_ndi_send_slot_vulkan
+               COMMAND score_addon_ndi_send_slot_test)
+      set_tests_properties(score_addon_ndi_send_slot score_addon_ndi_send_slot_vulkan
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui;gpu")
+      set_tests_properties(score_addon_ndi_send_slot_vulkan
+        PROPERTIES ENVIRONMENT "SCORE_TEST_API=vulkan")
+    endif()
+  endif()
+
+  # The output at Samples > 1: a multisampled target resolved into the texture
+  # the wire encoders read, so what is sent is anti-aliased. Needs a QRhi.
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/MsaaSendTest.cpp")
+    add_executable(score_addon_ndi_msaa_send_test tests/MsaaSendTest.cpp)
+    target_include_directories(score_addon_ndi_msaa_send_test
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/NDI/include")
+    target_link_libraries(score_addon_ndi_msaa_send_test
+      PRIVATE score_plugin_gfx score_plugin_media ${QT_PREFIX}::Gui)
+    target_compile_features(score_addon_ndi_msaa_send_test PRIVATE cxx_std_20)
+
+    if(COMMAND add_test)
+      add_test(NAME score_addon_ndi_msaa_send
+               COMMAND score_addon_ndi_msaa_send_test)
+      add_test(NAME score_addon_ndi_msaa_send_vulkan
+               COMMAND score_addon_ndi_msaa_send_test)
+      set_tests_properties(score_addon_ndi_msaa_send score_addon_ndi_msaa_send_vulkan
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS "ndi;gui;gpu")
+      set_tests_properties(score_addon_ndi_msaa_send_vulkan
+        PROPERTIES ENVIRONMENT "SCORE_TEST_API=vulkan")
+    endif()
+  endif()
+
   # Where each received FourCC's planes are. Pure: no SDK, no GPU, no sender.
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ReceiveLayoutTest.cpp")
     add_executable(score_addon_ndi_receive_layout_test tests/ReceiveLayoutTest.cpp)
